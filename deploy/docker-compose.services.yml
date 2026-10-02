@@ -19,3 +19,41 @@ services:
     depends_on:
       - console
     restart: unless-stopped
+  payment-gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: payment-gateway
+    image: camel-platform/payment-gateway:local
+    labels:
+      camel.platform.service: "payment-gateway"
+      camel.platform.domain: "payments"
+    environment:
+      SERVER_PORT: "8080"
+      PLATFORM_ENV: local
+      PLATFORM_CONSOLE_URL: http://console:8090
+    ports:
+      - "8102:8080"
+    depends_on:
+      - console
+    restart: unless-stopped
+  bank-simulator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: bank-simulator
+    image: camel-platform/bank-simulator:local
+    labels:
+      camel.platform.service: "bank-simulator"
+      camel.platform.domain: "payments"
+    environment:
+      SERVER_PORT: "8080"
+      PLATFORM_ENV: local
+      PLATFORM_CONSOLE_URL: http://console:8090
+    ports:
+      - "8103:8080"
+    depends_on:
+      - console
+    restart: unless-stopped

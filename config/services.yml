@@ -6,3 +6,11 @@ services:
     domain: demo
     port: 8101
     description: "Reference service demonstrating the platform conventions"
+  - name: payment-gateway
+    domain: payments
+    port: 8102
+    description: "Bank-neutral payment API (transfers, virtual accounts) with one adapter per bank"
+  - name: bank-simulator
+    domain: payments
+    port: 8103
+    description: "Local SNAP BI bank simulator (BNI profile) for development and tests; never deployed to production"

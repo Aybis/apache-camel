@@ -1,0 +1,52 @@
+# Settings specific to payment-gateway. Shared monitoring, logging and error-handling
+# defaults come from config/global/monitoring.yml; only override what differs.
+# Settings that operators change at runtime belong in the management console.
+spring:
+  application:
+    name: payment-gateway
+
+server:
+  port: ${SERVER_PORT:8102}
+
+platform:
+  domain: payments
+
+# ---------------------------------------------------------------------------
+# Payment gateway. Connection settings are versioned here; secrets (client
+# secrets, private keys) come only from environment variables or a vault.
+# ---------------------------------------------------------------------------
+payment:
+  # Required in the X-Api-Key header when set. Empty = no check (local only).
+  api-key: ${PAYMENT_API_KEY:}
+  events-uri: log:payment-events?level=INFO
+  reconciliation:
+    interval: 30s
+    first-check-after: 10s
+    max-checks: 20
+    not-found-grace: 10m
+  # One entry per bank. new-bank.sh appends new banks at the end of this file,
+  # so keep the banks block last.
+  banks:
+    bni:
+      enabled: ${BNI_ENABLED:false}
+      bank-id-code: "009"
+      # Local default is the bank-simulator service. Set BNI_BASE_URL to BNI's
+      # sandbox or production host once onboarding provides it.
+      base-url: ${BNI_BASE_URL:http://localhost:8103/bni}
+      client-key: ${BNI_CLIENT_KEY:}
+      client-secret: ${BNI_CLIENT_SECRET:}
+      private-key: ${BNI_PRIVATE_KEY:}
+      partner-id: ${BNI_PARTNER_ID:}
+      channel-id: ${BNI_CHANNEL_ID:}
+      connect-timeout: 5s
+      response-timeout: 30s
+      va-partner-service-id: ${BNI_VA_PARTNER_SERVICE_ID:}
+      inbound:
+        client-key: ${BNI_INBOUND_CLIENT_KEY:}
+        client-secret: ${BNI_INBOUND_CLIENT_SECRET:}
+        public-key: ${BNI_INBOUND_PUBLIC_KEY:}
+      # Override a SNAP path only if BNI's documentation differs from the standard, e.g.:
+      # paths:
+      #   transfer-status: /v1.0/transfer/status
+      # Fixed additionalInfo values BNI requires, e.g. "[additional-info.deviceId]": "..."
+      extra: {}

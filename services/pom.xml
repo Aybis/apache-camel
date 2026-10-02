@@ -16,6 +16,8 @@
 
     <modules>
         <!-- services:begin -->
+        <module>bank-simulator</module>
+        <module>payment-gateway</module>
         <module>sample-service</module>
         <!-- services:end -->
     </modules>
