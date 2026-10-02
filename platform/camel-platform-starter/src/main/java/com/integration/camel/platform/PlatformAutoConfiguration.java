@@ -25,6 +25,13 @@ public class PlatformAutoConfiguration {
         return new CorrelationIdProcessor(properties.getCorrelation().getHeader());
     }
 
+    /** Camel looks this bean up by name whenever log masking is on. */
+    @Bean(org.apache.camel.spi.MaskingFormatter.CUSTOM_LOG_MASK_REF)
+    @ConditionalOnMissingBean(name = org.apache.camel.spi.MaskingFormatter.CUSTOM_LOG_MASK_REF)
+    public PlatformMaskingFormatter platformMaskingFormatter() {
+        return new PlatformMaskingFormatter();
+    }
+
     @Bean
     @ConditionalOnMissingBean
     public PlatformRouteConfiguration platformRouteConfiguration(PlatformProperties properties,

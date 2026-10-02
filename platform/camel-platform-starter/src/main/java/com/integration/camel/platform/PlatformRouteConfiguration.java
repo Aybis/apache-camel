@@ -34,7 +34,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         PlatformProperties.ErrorHandling eh = properties.getErrorHandling();
 
         RouteConfigurationDefinition defaults = routeConfiguration();
-        defaults.errorHandler(deadLetterChannel(eh.getDeadLetterUri())
+        defaults.errorHandler(deadLetterChannel(deadLetterUri(eh))
                 .maximumRedeliveries(eh.getMaximumRedeliveries())
                 .redeliveryDelay(eh.getRedeliveryDelay())
                 .backOffMultiplier(eh.getBackoffMultiplier())
@@ -42,9 +42,25 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .retryAttemptedLogLevel(LoggingLevel.WARN)
                 .logExhausted(true)
                 .logExhaustedMessageHistory(false)
+                .logExhaustedMessageBody(false)
                 .useOriginalMessage());
         defaults.interceptFrom().process(correlation);
 
         routeConfiguration(TRANSACTED).interceptFrom().process(correlation);
+    }
+
+    /**
+     * The configured dead letter URI, or by default a log line with exchange ID, route, body type and
+     * exception but no headers and no body (bodies and headers carry account numbers, names, tokens).
+     * {@code platform.error-handling.log-body=true} adds the body, masked by {@link PlatformMaskingFormatter}
+     * and cut to 1000 characters.
+     */
+    static String deadLetterUri(PlatformProperties.ErrorHandling eh) {
+        if (eh.getDeadLetterUri() != null && !eh.getDeadLetterUri().isBlank()) {
+            return eh.getDeadLetterUri();
+        }
+        return "log:platform.dead-letter?level=ERROR&showExchangeId=true&showRouteId=true&showBodyType=true"
+                + "&showHeaders=false&showException=true&showCaughtException=true&showStackTrace=true"
+                + (eh.isLogBody() ? "&showBody=true&logMask=true&maxChars=1000" : "&showBody=false");
     }
 }

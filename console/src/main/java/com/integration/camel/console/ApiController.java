@@ -109,7 +109,7 @@ public class ApiController {
         List<InstanceView> instances = heartbeats.instances(entry.name());
         long version = entry.config().version();
         boolean pending = instances.stream().anyMatch(i -> !i.stale() && i.heartbeat().appliedConfigVersion() < version);
-        return new ServiceView(entry.name(), entry.domain(), entry.description(), entry.port(),
+        return new ServiceView(entry.name(), entry.domain(), entry.description(), entry.port(), entry.localOnly(),
                 HeartbeatRegistry.status(instances), version, pending, instances);
     }
 
