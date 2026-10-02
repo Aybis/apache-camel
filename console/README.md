@@ -36,7 +36,9 @@ heartbeat endpoints through the starter's `ConsoleAgent`.
 
 ```bash
 mvn -B -pl console -am package
-java -jar console/target/console.jar     # http://localhost:8090; reads ../config/services.yml by default
+# The default registry path (../config/services.yml) is relative to the working directory, so set it
+# explicitly when starting from the repository root; otherwise the service list starts empty.
+CONSOLE_REGISTRY=config/services.yml java -jar console/target/console.jar     # http://localhost:8090
 ```
 
 In the local stack it runs as the `console` container (`deploy/Dockerfile.console`).

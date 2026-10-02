@@ -40,4 +40,4 @@ java -jar services/payment-gateway/target/payment-gateway.jar & # port 8102
 | Path | Purpose |
 |---|---|
 | `dev/dev-keys.sh` | Generates throwaway RSA keys and secrets for both sides; never use them outside your machine |
-| `src/main/resources/application.yml` | Prefix, slow-response delay, partner keys and callback target, all from environment variables |
+| `src/main/resources/application.yml` | Fixed URL prefix (`/bni`); slow-response delay, partner keys and callback target from environment variables |

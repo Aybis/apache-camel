@@ -1,7 +1,8 @@
 # Repository map
 
-What every folder in this repository is for, in one place. Each folder listed here has its own
-`README.md` with the details: what is inside, how it relates to the rest, and how to build, run or test it.
+What every folder in this repository is for, in one place. Each top-level folder, module and service has
+its own `README.md` with the details (subfolders such as `deploy/alloy/` and `templates/service/` are
+described in their parent's README): what is inside, how it relates to the rest, and how to build, run or test it.
 
 ```
 apache-camel/

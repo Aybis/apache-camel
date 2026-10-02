@@ -19,7 +19,7 @@ apache-camel/
 └── scripts/                         new-service.sh, gen-compose.sh, stack.sh
 ```
 
-Every folder has its own `README.md`. [docs/repository-map.md](docs/repository-map.md) explains each folder
+Every top-level folder, module and service has its own `README.md`. [docs/repository-map.md](docs/repository-map.md) explains each folder
 in one line, how they fit together, and how IBM ACE concepts map onto them.
 
 ## Quick start (local)
