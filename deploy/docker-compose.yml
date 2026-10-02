@@ -2,6 +2,7 @@
 # Services come from the generated docker-compose.services.yml. Use scripts/stack.sh.
 name: camel-platform
 
+# Database passwords come from git-ignored deploy/.env, which scripts/stack.sh up creates on first run.
 services:
   loki:
     image: grafana/loki:3.7.8
@@ -69,7 +70,7 @@ services:
     command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/stack.sh up once to create deploy/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
     volumes:
       - postgres-data:/var/lib/postgresql
       # Unix socket shared with db-provision (local socket connections need no password).
@@ -92,7 +93,7 @@ services:
       # Socket, not TCP: works whatever admin password the data volume was created with.
       PGHOST: /var/run/postgresql
       PGUSER: postgres
-      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run scripts/stack.sh up once to create deploy/.env}
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?}
     volumes:
       - ./postgres/provision.sh:/provision.sh:ro
       - ../config/services.yml:/config/services.yml:ro
@@ -121,7 +122,7 @@ services:
       CONSOLE_WRITE_TOKEN: ${CONSOLE_WRITE_TOKEN:-}
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/console
       SPRING_DATASOURCE_USERNAME: console
-      SPRING_DATASOURCE_PASSWORD: ${SERVICE_DB_PASSWORD:?run scripts/stack.sh up once to create deploy/.env}
+      SPRING_DATASOURCE_PASSWORD: ${SERVICE_DB_PASSWORD:?}
     volumes:
       - ../config/services.yml:/config/services.yml:ro
       - console-data:/data

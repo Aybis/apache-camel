@@ -28,7 +28,7 @@ OUT="$ROOT/deploy/docker-compose.services.yml"
         db = name; gsub("-", "_", db)
         printf "      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/%s\n", db
         printf "      SPRING_DATASOURCE_USERNAME: %s\n", db
-        printf "      SPRING_DATASOURCE_PASSWORD: ${SERVICE_DB_PASSWORD:?run scripts/stack.sh up once to create deploy/.env}\n"
+        printf "      SPRING_DATASOURCE_PASSWORD: ${SERVICE_DB_PASSWORD:?}\n"
       }
       printf "    env_file:\n"
       printf "      - path: env/%s.env\n        required: false\n", name
