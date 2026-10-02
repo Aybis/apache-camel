@@ -16,10 +16,10 @@
     <name>Camel Integration Platform</name>
 
     <properties>
-        <java.version>21</java.version>
-        <maven.compiler.release>21</maven.compiler.release>
+        <java.version>25</java.version>
+        <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- Camel 4.22 LTS; it is built and tested against Spring Boot 4.1.1 -->
+        <!-- Camel 4.22 LTS; it is built and tested against Spring Boot 4.1.1. Java 25 LTS (standards STD-JAVA). -->
         <camel.version>4.22.1</camel.version>
         <spring-boot.version>4.1.1</spring-boot.version>
     </properties>

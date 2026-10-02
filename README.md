@@ -11,6 +11,8 @@ apache-camel/
 │   └── services.yml                 service registry (generated)
 ├── platform/camel-platform-starter  shared functions every service depends on
 ├── services/<name>/                 one folder per service (scripts/new-service.sh)
+│   ├── payment-gateway/             bank-neutral payment API, one adapter per bank (BNI first)
+│   └── bank-simulator/              local SNAP BI bank for tests and development only
 ├── console/                         management console (port 8090)
 ├── deploy/                          Docker Compose: Loki, Prometheus, Alloy, Grafana, console, services
 ├── templates/service/               template used by new-service.sh
@@ -19,7 +21,7 @@ apache-camel/
 
 ## Quick start (local)
 
-Requirements: Java 21, Maven 3.9+, Docker with Compose v2.
+Requirements: Java 25 (JDK), Maven 3.9+, Docker with Compose v2.
 
 ```bash
 bash scripts/stack.sh up        # builds jars and images, starts everything
