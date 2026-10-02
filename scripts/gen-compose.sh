@@ -2,7 +2,7 @@
 # Regenerate deploy/docker-compose.services.yml from config/services.yml.
 # Do not edit the generated file by hand.
 #
-# Per-service environment (credentials, partner endpoints) is read from optional, git-ignored files:
+# Per-service secrets (credentials, keys; never endpoints, which live in Git) come from optional, git-ignored files:
 #   deploy/env/<service>.env                  your local overrides
 #   services/<service>/dev/.keys/dev.env      written by a service's own dev tooling, if it has any
 # Services marked `local-only: true` in the registry get the label camel.platform.local-only=true.

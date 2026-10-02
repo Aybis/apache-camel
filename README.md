@@ -45,7 +45,7 @@ bash scripts/new-service.sh order-sync --domain orders --description "Syncs orde
 
 Add `--local-only` for a development or test helper such as a partner simulator: it runs in the local
 stack but `scripts/deployable-services.sh` (the list any release or production manifest must use) leaves it out.
-A service's own local variables (partner endpoints, keys) go in git-ignored `deploy/env/<service>.env`.
+A service's own local secrets (credentials, keys) go in git-ignored `deploy/env/<service>.env`; its endpoints stay in Git.
 
 This creates `services/order-sync/` (pom, `Application`, `OrderSyncRoutes`, test, `application.yml`),
 adds the module to `services/pom.xml`, registers it with the next free port in `config/services.yml`,
