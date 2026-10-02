@@ -40,6 +40,14 @@ platform:
 spring:
   application:
     name: unnamed-service
+  # Only used by services with a database (`new-service.sh --database`). Connection details and
+  # credentials come from SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD, never from YAML.
+  datasource:
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 5000  # ms
+  flyway:
+    locations: classpath:db/migration
 
 logging:
   structured:

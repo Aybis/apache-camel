@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Create a new service folder from templates/service and register it everywhere it must appear.
 #
-#   scripts/new-service.sh <service-name> [--domain <domain>] [--description "<text>"] [--local-only]
+#   scripts/new-service.sh <service-name> [--domain <domain>] [--description "<text>"] [--local-only] [--database]
 #
 # --local-only marks a development/test helper (e.g. a partner simulator). It runs in the local
 # stack but scripts/deployable-services.sh, and therefore any release or production manifest, skips it.
+#
+# --database gives the service its own PostgreSQL database (platform convention in CLAUDE.md): JDBC, Flyway
+# and a first migration in src/main/resources/db/migration, a Testcontainers PostgreSQL test, and
+# `database: true` in the registry, so the local stack creates the database and passes SPRING_DATASOURCE_*.
 #
 # Example:
 #   scripts/new-service.sh order-sync --domain orders --description "Syncs orders from SAP to WMS"
@@ -22,11 +26,13 @@ shift || true
 DOMAIN="unassigned"
 DESCRIPTION=""
 LOCAL_ONLY="false"
+DATABASE="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="$2"; shift 2 ;;
     --description) DESCRIPTION="$2"; shift 2 ;;
     --local-only) LOCAL_ONLY="true"; shift ;;
+    --database) DATABASE="true"; shift ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -58,18 +64,37 @@ PORT=$(( ${LAST_PORT:-8100} + 1 ))
 
 echo "Creating services/$NAME (package $PACKAGE, port $PORT, domain $DOMAIN)"
 
-# 1. Copy the template, renaming paths and replacing placeholders.
-(cd "$ROOT/templates/service" && find . -type f) | while read -r rel; do
-  dest="$TARGET/$(echo "$rel" | sed -e "s#__PACKAGE_PATH__#$PACKAGE_PATH#" -e "s#__CLASS__#$CLASS#")"
-  mkdir -p "$(dirname "$dest")"
-  sed -e "s#__SERVICE__#$NAME#g" \
-      -e "s#__PACKAGE__#$PACKAGE#g" \
-      -e "s#__CLASS__#$CLASS#g" \
-      -e "s#__DOMAIN__#$DOMAIN#g" \
-      -e "s#__PORT__#$PORT#g" \
-      -e "s#__DESCRIPTION__#$DESCRIPTION#g" \
-      "$ROOT/templates/service/$rel" > "$dest"
-done
+# 1. Copy the template (plus the database overlay with --database), renaming paths and replacing placeholders.
+copy_template() {
+  local src="$1"
+  (cd "$src" && find . -type f ! -name README.md ! -name pom-dependencies.xml) | while read -r rel; do
+    dest="$TARGET/$(echo "$rel" | sed -e "s#__PACKAGE_PATH__#$PACKAGE_PATH#" -e "s#__CLASS__#$CLASS#")"
+    mkdir -p "$(dirname "$dest")"
+    sed -e "s#__SERVICE__#$NAME#g" \
+        -e "s#__PACKAGE__#$PACKAGE#g" \
+        -e "s#__CLASS__#$CLASS#g" \
+        -e "s#__DOMAIN__#$DOMAIN#g" \
+        -e "s#__PORT__#$PORT#g" \
+        -e "s#__DESCRIPTION__#$DESCRIPTION#g" \
+        "$src/$rel" > "$dest"
+  done
+}
+copy_template "$ROOT/templates/service"
+if [[ "$DATABASE" == "true" ]]; then
+  copy_template "$ROOT/templates/service-database"
+  # Insert the database dependencies after the "Add the Camel components" line of the service pom.
+  awk -v deps="$ROOT/templates/service-database/pom-dependencies.xml" '
+    { print }
+    /Add the Camel components this integration needs/ { print ""; while ((getline line < deps) > 0) print line }
+  ' "$TARGET/pom.xml" > "$TARGET/pom.xml.tmp" && mv "$TARGET/pom.xml.tmp" "$TARGET/pom.xml"
+  # Local default URL (database name = service name with - as _); the password comes only from the environment.
+  DB_NAME="$(echo "$NAME" | tr '-' '_')"
+  awk -v db="$DB_NAME" '
+    { print }
+    /^    name: / && !done { print "  datasource:"; print "    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/" db "}"; print "    username: ${SPRING_DATASOURCE_USERNAME:" db "}"; done=1 }
+  ' "$TARGET/src/main/resources/application.yml" > "$TARGET/application.yml.tmp" \
+    && mv "$TARGET/application.yml.tmp" "$TARGET/src/main/resources/application.yml"
+fi
 
 # 2. Add the module to services/pom.xml, keeping the list sorted (portable: no gawk needed).
 POM="$ROOT/services/pom.xml"
@@ -89,6 +114,9 @@ cat >> "$ROOT/config/services.yml" <<YAML
 YAML
 if [[ "$LOCAL_ONLY" == "true" ]]; then
   echo "    local-only: true" >> "$ROOT/config/services.yml"
+fi
+if [[ "$DATABASE" == "true" ]]; then
+  echo "    database: true" >> "$ROOT/config/services.yml"
 fi
 
 # 4. Regenerate the compose file for services.

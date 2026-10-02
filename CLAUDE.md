@@ -11,7 +11,7 @@ message flows. Read this before adding or migrating a service.
   `service/domain/environment` tags, health probes, console client (pulls settings, heartbeats).
 - `services/<name>/` — one folder per service, created ONLY with `scripts/new-service.sh`.
 - `console/` — management console (settings store + audit, status, log search over Loki, dashboard).
-- `deploy/` — local stack (Loki, Prometheus, Alloy, Grafana, console, services). Dashboards are generated
+- `deploy/` — local stack (PostgreSQL, Loki, Prometheus, Alloy, Grafana, console, services). Dashboards are generated
   by `deploy/grafana/build_dashboards.py`; never hand-edit the JSON.
 - `config/services.yml` — service registry; maintained by the script.
 
@@ -39,6 +39,21 @@ message flows. Read this before adding or migrating a service.
    correlation ID automatically; without `MdcScope` the caller's log lines after the call lose it.
 10. Development/test helpers (simulators, mocks) are created with `new-service.sh ... --local-only`.
     Anything that releases or deploys takes its list from `scripts/deployable-services.sh`, never from `services/`.
+
+11. Database (PostgreSQL 18; local image `postgres:18.6-alpine`):
+    - Only when a service needs state: `new-service.sh ... --database`. It adds JDBC + Flyway, a first migration,
+      a Testcontainers test and `database: true` in the registry. To add one later, copy what that flag
+      generates (`templates/service-database/`) and set `database: true` in `config/services.yml`.
+    - One database and one role per service, both named after the service with `-` as `_`
+      (`order-sync` -> `order_sync`). A service never reads or writes another service's database; it calls its API.
+    - Connection and credentials only from `SPRING_DATASOURCE_URL`, `_USERNAME`, `_PASSWORD` (environment /
+      Kubernetes Secret). Locally, the `db-provision` job creates the database and `gen-compose.sh` passes them.
+    - Schema changes only as Flyway migrations in `src/main/resources/db/migration/V<n>__<what>.sql`, applied at
+      start-up. Never edit a migration that has run anywhere. Breaking changes ship as expand, then contract.
+    - Idempotency and money-safety rules are enforced with constraints (primary/unique keys), not only in code:
+      insert the key first, act second. Keep transactions short; never hold one open across a partner call.
+    - `JdbcClient` by default; JPA only when the model needs it. Pool size defaults to 10 (global config).
+    - Tests run against real PostgreSQL via Testcontainers (`@ServiceConnection`), never H2.
 
 ## Rules for payments (services/payment-gateway)
 Details and the API are in `services/payment-gateway/README.md`.
