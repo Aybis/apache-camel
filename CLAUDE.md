@@ -14,6 +14,9 @@ message flows. Read this before adding or migrating a service.
 - `deploy/` — local stack (Loki, Prometheus, Alloy, Grafana, console, services). Dashboards are generated
   by `deploy/grafana/build_dashboards.py`; never hand-edit the JSON.
 - `config/services.yml` — service registry; maintained by the script.
+- Every folder that holds a module, a service or a distinct concern ships with a `README.md`: what it is for,
+  what is inside, how it relates to the rest, how to build, run or test it, and the ACE equivalent where one
+  exists. Adding, renaming or removing such a folder updates `docs/repository-map.md` in the same pull request.
 
 ## Rules when writing a service
 1. Create it: `bash scripts/new-service.sh <kebab-name> --domain <domain> --description "..."`.
