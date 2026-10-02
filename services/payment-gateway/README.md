@@ -76,6 +76,7 @@ PostgreSQL 18, following the platform convention: its own database and login rol
 | Each replica asks the bank about different transfers | reconciliation claims due rows with `FOR UPDATE SKIP LOCKED` and a lease (`next_check_at`, `payment.reconciliation.claim-lease`) |
 | A late bank answer that contradicts a final status is not lost | the stored status stays, and a `transfer.manual-review` event carries both |
 | One bank request id per request | unique index on `(bank, external_id)` |
+| A database timeout is never a success | the role's `lock_timeout` / `statement_timeout` roll the work back; a payment notification is answered with SNAP `5042500` so the bank retries (credited once), and a transfer whose answer could not be saved stays `UNKNOWN` for reconciliation |
 | A payment notification is credited once | row lock (`SELECT ... FOR UPDATE`) on the account while deciding; unique index on (bank, payment id) |
 | Money is exact | `NUMERIC(19,2)`, status values constrained by CHECK; larger amounts are refused (400, or "amount mismatch" for notifications) |
 
@@ -83,7 +84,8 @@ Account numbers and names (the `request` column and the events) never reach the 
 events endpoint logs headers only, failed events are logged without their body, and the driver leaves row
 values out of error messages (`logServerErrorDetail=false`).
 
-Schema changes are new migration files (`V3__...sql`); never edit an applied one, and keep each one compatible
+Schema changes are new migration files (`V3__...sql`); never edit an applied one, give a slow one its own `SET LOCAL statement_timeout` (Flyway runs as the
+service role, limited to 5s per statement), and keep each one compatible
 with the previous release (expand, then contract).
 
 ## Running locally against the simulator

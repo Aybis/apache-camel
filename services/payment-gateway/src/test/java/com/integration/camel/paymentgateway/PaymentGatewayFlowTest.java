@@ -10,14 +10,18 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.KeyPair;
+import java.sql.Connection;
 import java.security.KeyPairGenerator;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+
+import javax.sql.DataSource;
 
 import org.apache.camel.CamelContext;
 import org.apache.camel.component.mock.MockEndpoint;
@@ -70,11 +74,11 @@ class PaymentGatewayFlowTest {
     @EnableConfigurationProperties(SimulatorProperties.class)
     static class WithSimulator {
 
-        /** Real PostgreSQL, same version as the local stack; the schema comes from the Flyway migrations. */
+        /** Real PostgreSQL, the image pinned in the root pom (same as the local stack); the schema comes from the Flyway migrations. */
         @Bean
         @ServiceConnection
         PostgreSQLContainer postgres() {
-            return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"));
+            return new PostgreSQLContainer(DockerImageName.parse(System.getProperty("postgres.image")));
         }
     }
 
@@ -90,6 +94,9 @@ class PaymentGatewayFlowTest {
     @Autowired
     CamelContext camel;
 
+    @Autowired
+    DataSource dataSource;
+
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry r) throws Exception {
         KeyPair gateway = rsa();
@@ -97,6 +104,9 @@ class PaymentGatewayFlowTest {
         r.add("server.port", () -> PORT);
         r.add("payment.api-key", () -> API_KEY);
         r.add("payment.events-uri", () -> "mock:payment-events");
+        // The timeouts provisioning sets on the service role (deploy/postgres), on every pooled connection.
+        r.add("spring.datasource.hikari.connection-init-sql", () ->
+                "SET statement_timeout = '5s'; SET lock_timeout = '2s'; SET idle_in_transaction_session_timeout = '30s'");
         r.add("payment.reconciliation.interval", () -> "1h");
         r.add("payment.reconciliation.first-check-after", () -> "0s");
         r.add("payment.banks.bni.enabled", () -> "true");
@@ -235,6 +245,43 @@ class PaymentGatewayFlowTest {
                 "transfer.manual-review".equals(e.getIn().getHeader("paymentEvent"))
                         && "T-CONTRA-1".equals(e.getIn().getHeader("paymentId"))
                         && e.getIn().getBody(String.class).contains("\"bankAnswer\""));
+    }
+
+    @Test
+    void aNotificationThatTimesOutOnTheLockIsRetriedAndCreditedOnce() throws Exception {
+        post("/api/payments/v1/virtual-accounts", """
+                {"bank":"bni","clientReferenceId":"INV-LOCK-1","customerNo":"0000001005","name":"PT Antre",
+                 "amount":1000}""");
+        String notice = "{\"virtualAccountNo\":\"988290000001005\",\"paymentRequestId\":\"PAY-LOCK\"}";
+        // Something else holds the account row longer than lock_timeout (2s).
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Future<?> holder = Executors.newSingleThreadExecutor().submit(() -> {
+            try (Connection c = dataSource.getConnection()) {
+                c.setAutoCommit(false);
+                try (var st = c.createStatement()) {
+                    st.execute("SELECT 1 FROM virtual_account WHERE id = 'INV-LOCK-1' FOR UPDATE");
+                }
+                locked.countDown();
+                release.await();
+                c.rollback();
+            }
+            return null;
+        });
+        locked.await();
+        JsonNode waited = JSON.readTree(post("/sim/va-payments", notice).body());
+        release.countDown();
+        holder.get();
+        // Not recorded, and the bank is told to retry (SNAP timeout), never "success".
+        assertThat(waited.path("gatewayResponse").path("responseCode").asString()).isEqualTo("5042500");
+        assertThat(JSON.readTree(get("/api/payments/v1/virtual-accounts/INV-LOCK-1").body()).path("status")
+                .asString()).isEqualTo("PENDING");
+        // The bank's retry is credited, once.
+        JsonNode retried = JSON.readTree(post("/sim/va-payments", notice).body());
+        assertThat(retried.path("gatewayResponse").path("responseCode").asString()).isEqualTo("2002500");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM virtual_account WHERE payment_request_id = 'PAY-LOCK'", Integer.class))
+                .isEqualTo(1);
     }
 
     @Test

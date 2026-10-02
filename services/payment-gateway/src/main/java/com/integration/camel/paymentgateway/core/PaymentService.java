@@ -1,6 +1,7 @@
 package com.integration.camel.paymentgateway.core;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
@@ -13,7 +14,9 @@ import org.apache.camel.ProducerTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.stereotype.Service;
 
 import com.integration.camel.paymentgateway.api.BankOutcome;
@@ -101,7 +104,17 @@ public class PaymentService {
             outcome = BankOutcome.unknown("adapter error: " + e.getMessage());
         }
         Transfer done = t.withOutcome(outcome);
-        if (!store.update(done, t.statusChecks())) {
+        boolean saved;
+        try {
+            saved = store.update(done, t.statusChecks());
+        } catch (DataAccessException e) {
+            // The bank was called but its answer could not be saved: the transfer stays UNKNOWN in the store
+            // and reconciliation asks the bank. Never report the bank's answer as the stored state.
+            LOG.error("Transfer {}: bank answered {} but the result could not be saved ({}); left UNKNOWN for "
+                    + "reconciliation", t.id(), done.status(), e.getClass().getSimpleName());
+            return new Submitted<>(t, true);
+        }
+        if (!saved) {
             // Reconciliation resolved it while the call was in flight; the stored state wins and was published.
             Transfer stored = reload(t.id());
             LOG.warn("Transfer {} was resolved concurrently; keeping the stored outcome", t.id());
@@ -122,7 +135,15 @@ public class PaymentService {
         PaymentProperties.Reconciliation cfg = properties.getReconciliation();
         List<Transfer> due = store.claimDueTransfers(cfg.getFirstCheckAfter(), cfg.getMaxChecks(),
                 cfg.getClaimLease(), CLAIM_BATCH);
-        due.forEach(this::checkStatus);
+        for (Transfer t : due) {
+            try {
+                checkStatus(t);
+            } catch (DataAccessException e) {
+                // Not saved: the lease runs out and a later round asks the bank again.
+                LOG.warn("Status check of transfer {} not saved ({}); retried after the lease", t.id(),
+                        e.getClass().getSimpleName());
+            }
+        }
         return due.size();
     }
 
@@ -267,6 +288,15 @@ public class PaymentService {
             LOG.error("Payment {} from {} was already applied to another virtual account; refusing it for {}",
                     n.paymentRequestId(), n.bank(), n.virtualAccountNo());
             return VaPaymentDecision.NOT_PAYABLE;
+        } catch (DataAccessException e) {
+            if (!isTimeout(e)) {
+                throw e;
+            }
+            // Lock or statement timeout: the transaction rolled back and nothing was credited. The bank retries,
+            // and the retry is applied once like any other delivery.
+            LOG.warn("Payment {} for virtual account {} at {} not recorded ({}); asking the bank to retry",
+                    n.paymentRequestId(), n.virtualAccountNo(), n.bank(), e.getClass().getSimpleName());
+            return VaPaymentDecision.TRY_LATER;
         }
         if (result.paid() != null) {
             publish("virtual-account.paid", result.paid().id(), result.paid().status(), result.paid());
@@ -359,6 +389,23 @@ public class PaymentService {
             publish("transfer.manual-review", stored.id(), stored.status(),
                     Map.of("stored", stored, "bankAnswer", bankAnswer));
         }
+    }
+
+    /**
+     * The role's lock_timeout (SQLState 55P03) and statement_timeout (57014): the statement was cancelled and its
+     * transaction rolled back. Spring does not classify 55P03 as transient, so the SQL state is checked too.
+     */
+    static boolean isTimeout(DataAccessException e) {
+        if (e instanceof TransientDataAccessException) {
+            return true;
+        }
+        for (Throwable c = e; c != null; c = c.getCause()) {
+            if (c instanceof SQLException sql && ("55P03".equals(sql.getSQLState())
+                    || "57014".equals(sql.getSQLState()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Transfer reload(String id) {

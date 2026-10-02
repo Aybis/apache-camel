@@ -314,6 +314,8 @@ public abstract class SnapBankAdapter implements BankAdapter {
             case UNKNOWN_ACCOUNT -> error(404, "4042512", "Invalid Bill/Virtual Account [Not Found]");
             case AMOUNT_MISMATCH -> error(404, "4042513", "Invalid Amount");
             case NOT_PAYABLE -> error(404, "4042514", "Paid Bill");
+            // Nothing was recorded; SNAP timeout, so the bank sends the notification again.
+            case TRY_LATER -> error(504, "5042500", "Timeout");
         };
     }
 
