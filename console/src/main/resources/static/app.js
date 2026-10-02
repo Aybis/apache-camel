@@ -185,7 +185,7 @@ async function renderConfig(svc, el) {
 
       <h2>Properties <span class="muted">· applied on the next restart</span></h2>
       <div class="note">These override the service's <code>application.yml</code> and the global <code>config/global/monitoring.yml</code>,
-        but not environment variables. Use them for operational settings (retries, timeouts, feature flags), not secrets.</div>
+        but not environment variables. Use them for operational settings (retries, timeouts, feature flags). Connection settings (URLs, hosts, queue managers, channels) and credentials are rejected: they live in Git and the secret store.</div>
       <div id="props">${Object.entries(config.properties).map(([k, v]) => propRow(k, v)).join('')}</div>
       <button type="button" id="add-prop">Add property</button>
 

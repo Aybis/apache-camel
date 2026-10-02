@@ -40,6 +40,13 @@ public class ConfigStore {
     private static final Logger LOG = LoggerFactory.getLogger(ConfigStore.class);
     private static final Pattern LOGGER_NAME = Pattern.compile("ROOT|[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)*");
     private static final Pattern PROPERTY_KEY = Pattern.compile("[a-z0-9][a-z0-9.\\-\\[\\]_]*");
+    /**
+     * Connection settings and credentials stay in Git and the secret store, not in the console
+     * (standards doc): a typo here could repoint production traffic with no code review.
+     */
+    private static final Pattern CONNECTION_KEY = Pattern.compile(
+            ".*(url|uri|host|port|endpoint|address|password|passwd|secret|token|credential|username|"
+                    + "key-store|trust-store|keystore|truststore|queue-manager|queuemanager|channel|conn-name|ccdt|ssl).*");
     private static final List<String> LEVELS = List.of("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF");
 
     private final JsonMapper mapper;
@@ -182,6 +189,10 @@ public class ConfigStore {
             }
             if (k.startsWith("logging.level.")) {
                 throw new IllegalArgumentException("Set log levels in the log level section, not as property " + k);
+            }
+            if (CONNECTION_KEY.matcher(k).matches()) {
+                throw new IllegalArgumentException(k + " looks like a connection setting or credential; "
+                        + "those are managed in Git and the secret store, not in the console");
             }
             if (k.equals("spring.application.name") || k.startsWith("platform.console.")) {
                 throw new IllegalArgumentException(k + " cannot be changed from the console");

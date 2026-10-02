@@ -30,7 +30,8 @@ message flows. Read this before adding or migrating a service.
    route id and console log-level changes for the package do not apply.
 6. Route ids: `<service>-<purpose>` (dashboards group by `routeId`).
 7. Every service keeps a Camel test (`@CamelSpringBootTest`, `platform.console.enabled=false`).
-8. Secrets never go in the console store or YAML; use env vars / Kubernetes Secrets / a vault.
+8. Secrets never go in the console store or YAML; use env vars / Kubernetes Secrets / a vault. Connection
+   settings (endpoints, hosts, queue managers, channels) live in Git; the console rejects such keys.
 
 ## Known decisions (do not undo without reason)
 - Camel 4.22.1 LTS + Spring Boot 4.1.1 + Java 21 (pinned in the root pom only).

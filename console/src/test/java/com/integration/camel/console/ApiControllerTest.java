@@ -67,6 +67,12 @@ class ApiControllerTest {
                 .andExpect(jsonPath("$.error").value(org.hamcrest.Matchers.containsString("Invalid level")));
 
         mvc.perform(put("/api/services/order-sync/config").header("X-Console-Token", "secret")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"properties\":{\"camel.component.jms.connection-factory.queue-manager\":\"QM2\"},\"changedBy\":\"Ama\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value(org.hamcrest.Matchers.containsString("connection setting")));
+
+        mvc.perform(put("/api/services/order-sync/config").header("X-Console-Token", "secret")
                         .contentType(MediaType.APPLICATION_JSON).content(change))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.logLevels.ROOT").value("DEBUG"));
