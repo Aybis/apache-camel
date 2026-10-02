@@ -1,0 +1,93 @@
+// Grafana Alloy: the one collector for logs and metrics.
+// Services only write JSON to stdout and expose /actuator/prometheus; Alloy
+// discovers every container labelled camel.platform.service, ships its logs to
+// Loki and scrapes its metrics into Prometheus. On Kubernetes the same pattern
+// uses discovery.kubernetes with pod labels instead of Docker labels.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "platform" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_camel_platform_service"]
+    regex         = ".+"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_camel_platform_service"]
+    target_label  = "service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_camel_platform_domain"]
+    target_label  = "domain"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "instance"
+  }
+}
+
+// ---------- logs ----------
+
+loki.source.docker "platform" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.platform.rules
+  forward_to    = [loki.process.platform.receiver]
+}
+
+loki.process "platform" {
+  // Spring Boot ECS JSON: {"log":{"level":"INFO"},"service":{"environment":"local"},...}
+  stage.json {
+    expressions = {
+      level       = "log.level",
+      environment = "service.environment",
+    }
+  }
+  // Low-cardinality fields become labels; everything else stays in the JSON line.
+  stage.labels {
+    values = {
+      level       = "",
+      environment = "",
+    }
+  }
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// ---------- metrics ----------
+
+discovery.relabel "metrics" {
+  targets = discovery.relabel.platform.output
+
+  // Scrape the container's HTTP port only (8080 for services, 8090 for the console).
+  rule {
+    source_labels = ["__meta_docker_port_private"]
+    regex         = "8080|8090"
+    action        = "keep"
+  }
+}
+
+prometheus.scrape "platform" {
+  targets         = discovery.relabel.metrics.output
+  metrics_path    = "/actuator/prometheus"
+  // Services tag their own metrics with service/domain/environment; keep those.
+  honor_labels    = true
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}

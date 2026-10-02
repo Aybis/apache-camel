@@ -1,0 +1,102 @@
+# ---------------------------------------------------------------------------
+# GLOBAL MONITORING CONFIGURATION
+#
+# The one place where logging, metrics, health and error-handling defaults for
+# every service are defined. It is packaged into camel-platform-starter and
+# loaded with the LOWEST precedence, so a service's application.yml, the
+# console store, environment variables and -D flags can each override it.
+#
+# Precedence, highest first:
+#   1. -D system properties / environment variables (e.g. LOGGING_LEVEL_ROOT)
+#   2. Console store overrides (pulled once at start-up; log levels also live)
+#   3. services/<name>/src/main/resources/application.yml
+#   4. this file
+#
+# Change this file, rebuild, and every service picks the change up.
+# ---------------------------------------------------------------------------
+
+platform:
+  # Logical environment label; appears on every log line and metric.
+  environment: ${PLATFORM_ENV:local}
+  # Business domain the service belongs to (override per service).
+  domain: unassigned
+  console:
+    enabled: true
+    url: ${PLATFORM_CONSOLE_URL:http://localhost:8090}
+    # How often the service pulls its settings and sends a heartbeat.
+    poll-interval: 15s
+    timeout: 2s
+  correlation:
+    # Inbound header carrying the correlation ID; generated when absent.
+    header: X-Correlation-Id
+  error-handling:
+    maximum-redeliveries: 3
+    redelivery-delay: 1000
+    backoff-multiplier: 2.0
+    # Where exhausted messages go. Services that consume from IBM MQ must
+    # override this with a backout queue, e.g. jms:queue:ORDERS.BACKOUT
+    dead-letter-uri: log:platform.dead-letter?level=ERROR&showHeaders=true&showBody=true&showException=true
+
+spring:
+  application:
+    name: unnamed-service
+
+logging:
+  structured:
+    # JSON on stdout (Elastic Common Schema). The collector (Grafana Alloy)
+    # ships stdout to Loki; services never talk to Loki directly.
+    format:
+      console: ecs
+    ecs:
+      service:
+        name: ${spring.application.name}
+        environment: ${platform.environment}
+  level:
+    root: INFO
+    org.apache.camel: INFO
+    com.integration: INFO
+
+camel:
+  main:
+    name: ${spring.application.name}
+    # Put camel.routeId, camel.exchangeId and the correlation ID on every log
+    # line, across threads, so a message can be traced end to end in Loki.
+    # Camel 4.22 marks this deprecated in favour of camel-mdc, but camel-mdc
+    # (tested on 4.22.1) leaves the error handler's "Failed delivery" lines
+    # without route or correlation ID, the lines that matter most. Revisit on
+    # each Camel upgrade.
+    use-mdc-logging: true
+    mdc-logging-keys-pattern: correlationId
+    # Graceful shutdown window for in-flight exchanges.
+    shutdown-timeout: 30
+  metrics:
+    enable-route-policy: true
+    enable-exchange-event-notifier: true
+    enable-route-event-notifier: true
+    uri-tag-enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,loggers
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  info:
+    env:
+      enabled: true
+  metrics:
+    distribution:
+      # Histogram buckets so Grafana can show p50/p95/p99 processing time per route.
+      percentiles-histogram:
+        camel.route.policy: true
+      minimum-expected-value:
+        camel.route.policy: 1ms
+      maximum-expected-value:
+        camel.route.policy: 60s
+
+server:
+  shutdown: graceful

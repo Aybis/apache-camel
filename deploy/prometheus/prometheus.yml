@@ -1,0 +1,4 @@
+# Prometheus only stores metrics; Grafana Alloy scrapes and remote-writes them.
+global:
+  scrape_interval: 15s
+scrape_configs: []

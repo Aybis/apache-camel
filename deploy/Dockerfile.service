@@ -1,0 +1,10 @@
+# Runtime image shared by every service. Build the jar first (mvn package),
+# then: docker compose ... build. One Dockerfile keeps all 20 images identical.
+FROM eclipse-temurin:21-jre
+ARG SERVICE
+RUN useradd --system --uid 10001 --no-create-home camel
+WORKDIR /app
+COPY services/${SERVICE}/target/${SERVICE}.jar /app/app.jar
+USER 10001
+EXPOSE 8080
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-XX:+ExitOnOutOfMemoryError", "-jar", "/app/app.jar"]

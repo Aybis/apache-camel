@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: console
+
+server:
+  port: ${SERVER_PORT:8090}
+  shutdown: graceful
+
+console:
+  # Where the store (store.json) and audit trail (audit.jsonl) are written.
+  data-dir: ${CONSOLE_DATA_DIR:./data}
+  # Service registry maintained by scripts/new-service.sh.
+  registry: ${CONSOLE_REGISTRY:../config/services.yml}
+  loki-url: ${LOKI_URL:http://localhost:3100}
+  # Browser-facing Grafana URL, used for links and the embedded dashboard.
+  grafana-url: ${GRAFANA_URL:http://localhost:3000}
+  dashboard-uid: camel-service
+  # A service is STALE when no heartbeat arrived within this window.
+  stale-after: 60s
+  # When set, changes require the X-Console-Token header. Leave empty only on a laptop.
+  write-token: ${CONSOLE_WRITE_TOKEN:}
+
+logging:
+  structured:
+    format:
+      console: ecs
+    ecs:
+      service:
+        name: console
+        environment: ${PLATFORM_ENV:local}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus

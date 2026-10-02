@@ -1,0 +1,4 @@
+# Only the built jars are needed in the image build context.
+**
+!services/*/target/*.jar
+!console/target/console.jar

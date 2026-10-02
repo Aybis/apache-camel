@@ -1,0 +1,95 @@
+# Local stack: observability (Loki, Prometheus, Alloy, Grafana) + console.
+# Services come from the generated docker-compose.services.yml. Use scripts/stack.sh.
+name: camel-platform
+
+services:
+  loki:
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "12345:12345"
+    depends_on:
+      - loki
+      - prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      # Local only: anonymous read access so the console can embed dashboards.
+      # Replace with SSO (OIDC/LDAP) before any shared environment.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/camel-overview.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - loki
+      - prometheus
+    restart: unless-stopped
+
+  console:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.console
+    image: camel-platform/console:local
+    labels:
+      camel.platform.service: "console"
+      camel.platform.domain: "platform"
+    environment:
+      SERVER_PORT: "8090"
+      PLATFORM_ENV: local
+      CONSOLE_DATA_DIR: /data
+      CONSOLE_REGISTRY: /config/services.yml
+      LOKI_URL: http://loki:3100
+      # Browser-facing URL (the console page links and embeds it).
+      GRAFANA_URL: ${GRAFANA_PUBLIC_URL:-http://localhost:3000}
+      CONSOLE_WRITE_TOKEN: ${CONSOLE_WRITE_TOKEN:-}
+    volumes:
+      - ../config/services.yml:/config/services.yml:ro
+      - console-data:/data
+    ports:
+      - "8090:8090"
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  prometheus-data:
+  grafana-data:
+  console-data:

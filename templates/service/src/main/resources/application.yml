@@ -1,0 +1,12 @@
+# Settings specific to __SERVICE__. Shared monitoring, logging and error-handling
+# defaults come from config/global/monitoring.yml; only override what differs.
+# Settings that operators change at runtime belong in the management console.
+spring:
+  application:
+    name: __SERVICE__
+
+server:
+  port: ${SERVER_PORT:__PORT__}
+
+platform:
+  domain: __DOMAIN__

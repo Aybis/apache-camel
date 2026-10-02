@@ -1,0 +1,12 @@
+# Settings specific to sample-service. Shared monitoring, logging and error-handling
+# defaults come from config/global/monitoring.yml; only override what differs.
+# Settings that operators change at runtime belong in the management console.
+spring:
+  application:
+    name: sample-service
+
+server:
+  port: ${SERVER_PORT:8101}
+
+platform:
+  domain: demo

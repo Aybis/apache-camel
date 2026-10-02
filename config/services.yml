@@ -1,0 +1,8 @@
+# Service registry: one entry per service folder under services/.
+# Maintained by scripts/new-service.sh. The console seeds its service list from
+# this file and scripts/gen-compose.sh builds deploy/docker-compose.services.yml from it.
+services:
+  - name: sample-service
+    domain: demo
+    port: 8101
+    description: "Reference service demonstrating the platform conventions"
