@@ -63,13 +63,13 @@ public class JdbcPaymentStore implements PaymentStore {
     }
 
     @Override
-    public void update(Transfer t) {
-        jdbc.update("""
+    public boolean update(Transfer t, int expectedStatusChecks) {
+        return jdbc.update("""
                 UPDATE transfer SET status = ?, bank_reference = ?, bank_response_code = ?, bank_response_message = ?,
                     updated_at = ?, status_checks = ?
-                WHERE id = ? AND status IN ('PENDING', 'UNKNOWN')""",
+                WHERE id = ? AND status IN ('PENDING', 'UNKNOWN') AND status_checks = ?""",
                 t.status().name(), t.bankReference(), t.bankResponseCode(), truncate(t.bankResponseMessage()),
-                ts(t.updatedAt()), t.statusChecks(), t.id());
+                ts(t.updatedAt()), t.statusChecks(), t.id(), expectedStatusChecks) == 1;
     }
 
     @Override
@@ -110,13 +110,13 @@ public class JdbcPaymentStore implements PaymentStore {
     }
 
     @Override
-    public void update(VirtualAccount va) {
-        jdbc.update("""
+    public boolean update(VirtualAccount va) {
+        return jdbc.update("""
                 UPDATE virtual_account SET virtual_account_no = ?, status = ?, bank_response_code = ?,
                     bank_response_message = ?, paid_amount = ?, payment_request_id = ?, paid_at = ?, updated_at = ?
                 WHERE id = ? AND status <> 'SUCCESS'""",
                 va.virtualAccountNo(), va.status().name(), va.bankResponseCode(), truncate(va.bankResponseMessage()),
-                va.paidAmount(), va.paymentRequestId(), ts(va.paidAt()), ts(va.updatedAt()), va.id());
+                va.paidAmount(), va.paymentRequestId(), ts(va.paidAt()), ts(va.updatedAt()), va.id()) == 1;
     }
 
     @Override

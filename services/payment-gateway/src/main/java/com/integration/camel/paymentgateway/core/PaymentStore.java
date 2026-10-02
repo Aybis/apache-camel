@@ -24,8 +24,12 @@ public interface PaymentStore {
     /** Stores the transfer unless one with the same id exists; returns the existing one if so. */
     Optional<Transfer> insertIfAbsent(Transfer transfer);
 
-    /** Saves a new state of a transfer; ignored if the stored transfer is already final. */
-    void update(Transfer transfer);
+    /**
+     * Saves a new state of a transfer, only if the stored transfer is still open and has had exactly
+     * {@code expectedStatusChecks} status checks (nobody else changed it meanwhile). Returns {@code false} when
+     * another writer won; the caller then reloads the stored state and must not publish its own.
+     */
+    boolean update(Transfer transfer, int expectedStatusChecks);
 
     Optional<Transfer> findTransfer(String id);
 
@@ -34,8 +38,8 @@ public interface PaymentStore {
 
     Optional<VirtualAccount> insertIfAbsent(VirtualAccount virtualAccount);
 
-    /** Saves a new state of a virtual account; ignored if the stored account is already paid. */
-    void update(VirtualAccount virtualAccount);
+    /** Saves a new state of a virtual account; returns {@code false} (and changes nothing) if it is already paid. */
+    boolean update(VirtualAccount virtualAccount);
 
     Optional<VirtualAccount> findVirtualAccount(String id);
 

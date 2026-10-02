@@ -99,7 +99,11 @@ public class PaymentService {
             outcome = BankOutcome.unknown("adapter error: " + e.getMessage());
         }
         Transfer done = t.withOutcome(outcome);
-        store.update(done);
+        if (!store.update(done, t.statusChecks())) {
+            // Reconciliation resolved it while the call was in flight; the stored state wins and was published.
+            LOG.warn("Transfer {} was resolved concurrently; keeping the stored outcome", t.id());
+            return new Submitted<>(reload(t.id()), true);
+        }
         publish("transfer", done.id(), done.status(), done);
         return new Submitted<>(done, true);
     }
@@ -140,7 +144,10 @@ public class PaymentService {
             o = new BankOutcome(PaymentStatus.PENDING, o.bankReference(), o.responseCode(), o.responseMessage());
         }
         Transfer updated = t.withStatusCheck(o);
-        store.update(updated);
+        if (!store.update(updated, t.statusChecks())) {
+            // Another instance or request checked it meanwhile; it owns the event.
+            return reload(t.id());
+        }
         if (updated.status().isFinal()) {
             publish("transfer", updated.id(), updated.status(), updated);
         } else if (updated.statusChecks() >= properties.getReconciliation().getMaxChecks()) {
@@ -180,7 +187,10 @@ public class PaymentService {
         }
         VirtualAccount done = va.withCreation(c.virtualAccountNo(), c.outcome());
         try {
-            store.update(done);
+            if (!store.update(done)) {
+                // Paid in the meantime: the stored state wins.
+                return new Submitted<>(store.findVirtualAccount(done.id()).orElseThrow(), existing.isEmpty());
+            }
         } catch (DuplicateKeyException e) {
             // The number belongs to another reference (unique per bank in the database).
             store.update(va.withCreation(null, new BankOutcome(PaymentStatus.FAILED, null, "DUPLICATE_NUMBER",
@@ -216,6 +226,12 @@ public class PaymentService {
     VaPaymentDecision applyVaPayment(VaPaymentNotice n) {
         record Result(VaPaymentDecision decision, VirtualAccount paid) {
         }
+        if (!validAmount(n.paidAmount())) {
+            // Not a valid rupiah amount (or too large to store): never credit it.
+            LOG.warn("Payment {} for virtual account {} at {} has an invalid amount {}", n.paymentRequestId(),
+                    n.virtualAccountNo(), n.bank(), n.paidAmount());
+            return VaPaymentDecision.AMOUNT_MISMATCH;
+        }
         Result result;
         try {
             result = store.withLockedVirtualAccount(n.bank(), n.virtualAccountNo(), found -> {
@@ -238,7 +254,10 @@ public class PaymentService {
                     return new Result(VaPaymentDecision.NOT_PAYABLE, null);
                 }
                 VirtualAccount paid = va.withPayment(n);
-                store.update(paid);
+                if (!store.update(paid)) {
+                    // Cannot happen under the row lock unless the account was paid; refuse rather than guess.
+                    return new Result(VaPaymentDecision.NOT_PAYABLE, null);
+                }
                 return new Result(VaPaymentDecision.ACCEPTED, paid);
             });
         } catch (DuplicateKeyException e) {
@@ -312,12 +331,28 @@ public class PaymentService {
         }
     }
 
+    /** Amounts are stored as NUMERIC(19,2): at most 17 digits before the decimal point. */
+    static final int MAX_INTEGER_DIGITS = 17;
+
+    static boolean validAmount(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) {
+            return false;
+        }
+        BigDecimal a = amount.stripTrailingZeros();
+        return a.scale() <= 2 && a.precision() - a.scale() <= MAX_INTEGER_DIGITS;
+    }
+
+    private Transfer reload(String id) {
+        return store.findTransfer(id).orElseThrow();
+    }
+
     private static BigDecimal requireAmount(BigDecimal amount) {
         if (amount == null) {
             throw PaymentException.invalid("amount is required");
         }
-        if (amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 2) {
-            throw PaymentException.invalid("amount must be positive with at most 2 decimals");
+        if (!validAmount(amount)) {
+            throw PaymentException.invalid("amount must be positive, with at most " + MAX_INTEGER_DIGITS
+                    + " digits before the decimal point and at most 2 decimals");
         }
         return amount.setScale(2);
     }

@@ -23,6 +23,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -62,8 +63,13 @@ class PaymentGatewayFlowTest {
     static class WithSimulator {
     }
 
-    /** A real PostgreSQL, started once for the class; the schema comes from the Flyway migrations. */
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17-alpine");
+    /**
+     * A real PostgreSQL (the local stack's version), started once for the class; {@code @ServiceConnection} points
+     * the datasource at it and the schema comes from the Flyway migrations.
+     */
+    @ServiceConnection
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6-alpine")
+            .withDatabaseName("payment_gateway").withUsername("payment_gateway");
 
     static {
         POSTGRES.start();
@@ -77,9 +83,6 @@ class PaymentGatewayFlowTest {
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry r) throws Exception {
-        r.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        r.add("spring.datasource.username", POSTGRES::getUsername);
-        r.add("spring.datasource.password", POSTGRES::getPassword);
         KeyPair gateway = rsa();
         KeyPair bank = rsa();
         r.add("server.port", () -> PORT);
@@ -158,8 +161,44 @@ class PaymentGatewayFlowTest {
         post("/api/payments/v1/transfers", transfer("T-FINAL-1", "009", null, "5.00"));
         Transfer done = store.findTransfer("T-FINAL-1").orElseThrow();
         assertThat(done.status().name()).isEqualTo("SUCCESS");
-        store.update(done.withOutcome(BankOutcome.unknown("stale write")));
+        assertThat(store.update(done.withOutcome(BankOutcome.unknown("stale write")), done.statusChecks())).isFalse();
         assertThat(store.findTransfer("T-FINAL-1").orElseThrow().status().name()).isEqualTo("SUCCESS");
+    }
+
+    @Test
+    void aStaleStatusCheckLosesToAConcurrentOne() throws Exception {
+        // .77 answers too late: the transfer stays UNKNOWN and open.
+        post("/api/payments/v1/transfers", transfer("T-STALE-1", "009", null, "77.77"));
+        Transfer open = store.findTransfer("T-STALE-1").orElseThrow();
+        assertThat(open.status().name()).isEqualTo("UNKNOWN");
+        // Two checkers read the same state; only the first write counts, so only its writer publishes.
+        assertThat(store.update(open.withStatusCheck(BankOutcome.unknown("first")), open.statusChecks())).isTrue();
+        assertThat(store.update(open.withStatusCheck(BankOutcome.unknown("second")), open.statusChecks())).isFalse();
+        Transfer stored = store.findTransfer("T-STALE-1").orElseThrow();
+        assertThat(stored.statusChecks()).isEqualTo(open.statusChecks() + 1);
+        assertThat(stored.bankResponseMessage()).isEqualTo("first");
+    }
+
+    @Test
+    void amountsTooLargeToStoreAreRejected() throws Exception {
+        // NUMERIC(19,2) holds 17 digits before the decimal point: an 18-digit amount is a 400, not a 500.
+        HttpResponse<String> transfer = post("/api/payments/v1/transfers",
+                transfer("T-HUGE-1", "009", null, "123456789012345678.00"));
+        assertThat(transfer.statusCode()).isEqualTo(400);
+        assertThat(store.findTransfer("T-HUGE-1")).isEmpty();
+        HttpResponse<String> va = post("/api/payments/v1/virtual-accounts", """
+                {"bank":"bni","clientReferenceId":"INV-HUGE","customerNo":"0000001003","name":"PT Besar",
+                 "amount":123456789012345678}""");
+        assertThat(va.statusCode()).isEqualTo(400);
+
+        // An open-amount account refuses a notification whose amount cannot be stored.
+        post("/api/payments/v1/virtual-accounts", """
+                {"bank":"bni","clientReferenceId":"INV-OPEN-1","customerNo":"0000001004","name":"PT Terbuka"}""");
+        JsonNode huge = JSON.readTree(post("/sim/va-payments",
+                "{\"virtualAccountNo\":\"988290000001004\",\"amount\":\"123456789012345678\"}").body());
+        assertThat(huge.path("gatewayResponse").path("responseCode").asString()).isEqualTo("4042513");
+        assertThat(JSON.readTree(get("/api/payments/v1/virtual-accounts/INV-OPEN-1").body()).path("status")
+                .asString()).isEqualTo("PENDING");
     }
 
     @Test

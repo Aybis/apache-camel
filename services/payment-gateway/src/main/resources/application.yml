@@ -4,11 +4,12 @@
 spring:
   application:
     name: payment-gateway
-  # PostgreSQL. URL, user and password come from the environment (SPRING_DATASOURCE_URL,
-  # SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD). The service owns the
-  # payment_gateway schema; Flyway creates and migrates it at start-up.
+  # PostgreSQL 18, platform convention: one database and one login role per service, both
+  # named payment_gateway. URL, user and password come only from the environment
+  # (SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD). The
+  # service owns the payment_gateway schema; Flyway creates and migrates it at start-up.
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/camel}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/payment_gateway}
     hikari:
       schema: payment_gateway
       maximum-pool-size: 10

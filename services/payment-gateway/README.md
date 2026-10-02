@@ -62,26 +62,29 @@ from the environment: `BNI_CLIENT_KEY`, `BNI_CLIENT_SECRET`, `BNI_PRIVATE_KEY` (
 
 ## Database
 
-PostgreSQL, schema `payment_gateway`, created and migrated by Flyway at start-up from
-`src/main/resources/db/migration`. Connection from `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`,
-`SPRING_DATASOURCE_PASSWORD`. The database enforces the money-safety rules itself, so they hold across replicas:
+PostgreSQL 18, following the platform convention: its own database and login role, both named
+`payment_gateway`, and schema `payment_gateway`, created and migrated by Flyway at start-up from
+`src/main/resources/db/migration`. Connection only from the environment: `SPRING_DATASOURCE_URL`,
+`SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`; at most 10 connections per instance. The database enforces the money-safety rules itself, so they hold across replicas:
 
 | Rule | How |
 |---|---|
 | A client reference is sent at most once | `transfer.id` primary key; `INSERT ... ON CONFLICT DO NOTHING` decides which request sends |
 | Saved before sending | the insert is its own committed statement, before the bank is called |
 | A final status is never overwritten | every UPDATE is guarded by `status IN ('PENDING','UNKNOWN')` (or `<> 'SUCCESS'` for accounts) |
+| One writer per status check | transfer UPDATEs also require the `status_checks` count the writer read; the loser reloads and publishes nothing |
 | A payment notification is credited once | row lock (`SELECT ... FOR UPDATE`) on the account while deciding; unique index on (bank, payment id) |
-| Money is exact | `NUMERIC(19,2)`, status values constrained by CHECK |
+| Money is exact | `NUMERIC(19,2)`, status values constrained by CHECK; larger amounts are refused (400, or "amount mismatch" for notifications) |
 
-Schema changes are new migration files (`V2__...sql`); never edit an applied one.
+Schema changes are new migration files (`V2__...sql`); never edit an applied one, and keep each one compatible
+with the previous release (expand, then contract).
 
 ## Running locally against the simulator
 
 ```bash
-docker run -d --name payments-db -p 5432:5432 -e POSTGRES_DB=camel -e POSTGRES_USER=camel \
-  -e POSTGRES_PASSWORD=camel postgres:17-alpine
-export SPRING_DATASOURCE_USERNAME=camel SPRING_DATASOURCE_PASSWORD=camel
+docker run -d --name payments-db -p 5432:5432 -e POSTGRES_DB=payment_gateway \
+  -e POSTGRES_USER=payment_gateway -e POSTGRES_PASSWORD=local-only postgres:18.6-alpine
+export SPRING_DATASOURCE_USERNAME=payment_gateway SPRING_DATASOURCE_PASSWORD=local-only
 mvn -B -pl services/bank-simulator,services/payment-gateway -am package
 bash services/bank-simulator/dev/dev-keys.sh                 # throwaway keys, git-ignored
 set -a; source services/bank-simulator/dev/.keys/dev.env; set +a
