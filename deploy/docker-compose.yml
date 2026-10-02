@@ -2,7 +2,8 @@
 # Services come from the generated docker-compose.services.yml. Use scripts/stack.sh.
 name: camel-platform
 
-# Database passwords come from git-ignored deploy/.env, which scripts/stack.sh up creates on first run.
+# Database passwords and POSTGRES_IMAGE (from the root pom) come from git-ignored deploy/.env, which
+# scripts/stack.sh up creates and keeps current.
 services:
   loki:
     image: grafana/loki:3.7.8
@@ -65,7 +66,7 @@ services:
 
   postgres:
     # PostgreSQL 18 (platform database convention: one database + role per service, see CLAUDE.md).
-    image: postgres:18.6-alpine
+    image: ${POSTGRES_IMAGE:?}
     # Default is 100; 20 services x pool of 10 + console would exceed it.
     command: ["postgres", "-c", "max_connections=300"]
     environment:
@@ -87,7 +88,7 @@ services:
 
   # One-shot: creates missing per-service databases and roles from config/services.yml, then exits.
   db-provision:
-    image: postgres:18.6-alpine
+    image: ${POSTGRES_IMAGE:?}
     entrypoint: ["sh", "/provision.sh"]
     environment:
       # Socket, not TCP: works whatever admin password the data volume was created with.

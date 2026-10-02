@@ -40,7 +40,7 @@ message flows. Read this before adding or migrating a service.
 10. Development/test helpers (simulators, mocks) are created with `new-service.sh ... --local-only`.
     Anything that releases or deploys takes its list from `scripts/deployable-services.sh`, never from `services/`.
 
-11. Database (PostgreSQL 18; local image `postgres:18.6-alpine`):
+11. Database (PostgreSQL 18; the image is pinned once, `postgres.image` in the root pom, for tests and the local stack):
     - Only when a service needs state: `new-service.sh ... --database`. It adds JDBC + Flyway, a first migration,
       a Testcontainers test and `database: true` in the registry. To add one later, copy what that flag
       generates (`templates/service-database/`) and set `database: true` in `config/services.yml`.
@@ -51,9 +51,13 @@ message flows. Read this before adding or migrating a service.
     - Schema changes only as Flyway migrations in `src/main/resources/db/migration/V<n>__<what>.sql`, applied at
       start-up. Never edit a migration that has run anywhere. Breaking changes ship as expand, then contract.
     - Idempotency and money-safety rules are enforced with constraints (primary/unique keys), not only in code:
-      insert the key first, act second. Keep transactions short; never hold one open across a partner call.
+      insert the key first (`INSERT ... ON CONFLICT DO NOTHING`, act only if 1 row), act second. Never catch a
+      unique violation to detect duplicates: it aborts the PostgreSQL transaction. Keep transactions short; never hold one open across a partner call.
     - Tables live in a schema named like the database (`order_sync`), owned by the service's role, never in
-      `public`; `new-service.sh --database` sets `spring.flyway.default-schema` and the Hikari `schema` to it.
+      `public`. The role's `search_path` is set to it in the database (provisioning); `new-service.sh --database`
+      also sets `spring.flyway.default-schema` and the Hikari `schema` as a safeguard.
+    - Per-role limits: `statement_timeout` 5s, `lock_timeout` 2s, `idle_in_transaction_session_timeout` 30s
+      (set by provisioning, not server-wide). A slow migration sets its own `SET statement_timeout` first.
     - `JdbcClient` by default; JPA only when the model needs it.
     - Connection budget: pool defaults to max 10 / min idle 2 per instance (global config). Size
       `max_connections` for the sum of every instance's maximum (20 services x 2 replicas x 10 = 400) or put
