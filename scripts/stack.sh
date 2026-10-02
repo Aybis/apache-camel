@@ -19,6 +19,11 @@ case "${1:-up}" in
       )
       echo "Generated local database passwords in deploy/.env"
     fi
+    # PostgreSQL image: single pin in the root pom, refreshed into deploy/.env on every start.
+    PG_IMAGE="$(sed -n 's#.*<postgres.image>\(.*\)</postgres.image>.*#\1#p' "$ROOT/pom.xml" | head -1)"
+    grep -v '^POSTGRES_IMAGE=' "$ROOT/deploy/.env" > "$ROOT/deploy/.env.tmp" || true
+    echo "POSTGRES_IMAGE=$PG_IMAGE" >> "$ROOT/deploy/.env.tmp"
+    cat "$ROOT/deploy/.env.tmp" > "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.tmp"
     (cd "$ROOT" && mvn -B -q package -DskipTests)
     "${COMPOSE[@]}" up -d --build
     echo

@@ -29,13 +29,13 @@ import org.testcontainers.utility.DockerImageName;
 @Import(ApiControllerTest.Postgres.class)
 class ApiControllerTest {
 
-    /** Same major version as the local stack (deploy/docker-compose.yml); never H2. */
+    /** Real PostgreSQL; the image comes from the root pom (postgres.image), same as the local stack. Never H2. */
     @TestConfiguration(proxyBeanMethods = false)
     static class Postgres {
         @Bean
         @ServiceConnection
         PostgreSQLContainer postgres() {
-            return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"));
+            return new PostgreSQLContainer(DockerImageName.parse(System.getProperty("postgres.image")));
         }
     }
 

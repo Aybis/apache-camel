@@ -20,13 +20,13 @@ import org.testcontainers.utility.DockerImageName;
 @Import(__CLASS__RoutesTest.Postgres.class)
 class __CLASS__RoutesTest {
 
-    /** Real PostgreSQL, same major version as the local stack; never H2. */
+    /** Real PostgreSQL; the image comes from the root pom (postgres.image), same as the local stack. Never H2. */
     @TestConfiguration(proxyBeanMethods = false)
     static class Postgres {
         @Bean
         @ServiceConnection
         PostgreSQLContainer postgres() {
-            return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"));
+            return new PostgreSQLContainer(DockerImageName.parse(System.getProperty("postgres.image")));
         }
     }
 
@@ -41,8 +41,20 @@ class __CLASS__RoutesTest {
         assertThat(camelContext.getRoute("__SERVICE__-ping")).isNotNull();
     }
 
+    @Autowired
+    ProcessedMessages processedMessages;
+
     @Test
     void migrationsRan() {
-        assertThat(jdbc.sql("SELECT count(*) FROM processed_message").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM processed_message").query(Long.class).single()).isNotNegative();
+    }
+
+    @Test
+    void aMessageIdIsClaimedOnceAndPurgedAfterRetention() {
+        assertThat(processedMessages.claim("msg-1")).isTrue();
+        assertThat(processedMessages.claim("msg-1")).isFalse();
+        jdbc.sql("UPDATE processed_message SET processed_at = now() - interval '400 days' WHERE message_id = 'msg-1'").update();
+        assertThat(processedMessages.purge()).isEqualTo(1);
+        assertThat(processedMessages.claim("msg-1")).isTrue();
     }
 }

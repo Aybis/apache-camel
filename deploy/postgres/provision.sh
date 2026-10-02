@@ -24,5 +24,15 @@ SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'db', :'pw') \gexec
 SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'db')
  WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \gexec
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'db') \gexec
+-- Schema per service (CLAUDE.md rule 11) as the role's default search_path, set server-side so it also
+-- holds behind PgBouncer in transaction mode (Hikari's `schema` is only a second safeguard).
+SELECT format('ALTER ROLE %I IN DATABASE %I SET search_path = %I', :'db', :'db', :'db') \gexec
+-- Starting limits per role, not server-wide (standards STD-DB-08). Flyway runs as the same role locally:
+-- a migration that needs longer (e.g. an index build) starts with its own SET statement_timeout.
+SELECT format('ALTER ROLE %I SET statement_timeout = %L', :'db', '5s') \gexec
+SELECT format('ALTER ROLE %I SET lock_timeout = %L', :'db', '2s') \gexec
+SELECT format('ALTER ROLE %I SET idle_in_transaction_session_timeout = %L', :'db', '30s') \gexec
 SQL
+  # The schema itself, owned by the service role, inside the service's database.
+  psql -v ON_ERROR_STOP=1 -d "$db" -v db="$db" -c "CREATE SCHEMA IF NOT EXISTS \"$db\" AUTHORIZATION \"$db\""
 done
