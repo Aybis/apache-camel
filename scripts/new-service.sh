@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Create a new service folder from templates/service and register it everywhere it must appear.
 #
-#   scripts/new-service.sh <service-name> [--domain <domain>] [--description "<text>"]
+#   scripts/new-service.sh <service-name> [--domain <domain>] [--description "<text>"] [--local-only]
+#
+# --local-only marks a development/test helper (e.g. a partner simulator). It runs in the local
+# stack but scripts/deployable-services.sh, and therefore any release or production manifest, skips it.
 #
 # Example:
 #   scripts/new-service.sh order-sync --domain orders --description "Syncs orders from SAP to WMS"
@@ -18,10 +21,12 @@ NAME="${1:-}"
 shift || true
 DOMAIN="unassigned"
 DESCRIPTION=""
+LOCAL_ONLY="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="$2"; shift 2 ;;
     --description) DESCRIPTION="$2"; shift 2 ;;
+    --local-only) LOCAL_ONLY="true"; shift ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -82,6 +87,9 @@ cat >> "$ROOT/config/services.yml" <<YAML
     port: $PORT
     description: "$DESCRIPTION"
 YAML
+if [[ "$LOCAL_ONLY" == "true" ]]; then
+  echo "    local-only: true" >> "$ROOT/config/services.yml"
+fi
 
 # 4. Regenerate the compose file for services.
 bash "$ROOT/scripts/gen-compose.sh"
