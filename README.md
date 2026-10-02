@@ -32,7 +32,7 @@ bash scripts/stack.sh up        # builds jars and images, starts everything
 | Console | http://localhost:8090 |
 | Grafana | http://localhost:3000 (admin / admin; anonymous viewing on) |
 | Prometheus | http://localhost:9090 |
-| PostgreSQL | localhost:5432 (admin user `postgres`, password `local-dev-only`; one database per service) |
+| PostgreSQL | localhost:5432, this machine only (admin user `postgres`; passwords are generated into git-ignored `deploy/.env`) |
 | sample-service | http://localhost:8101/api/sample-service/ping |
 
 `sample-service` simulates orders every few seconds and fails about one in ten attempts, so the
@@ -46,7 +46,7 @@ bash scripts/new-service.sh order-sync --domain orders --description "Syncs orde
 
 Add `--local-only` for a development or test helper such as a partner simulator: it runs in the local
 stack but `scripts/deployable-services.sh` (the list any release or production manifest must use) leaves it out.
-A service's own local variables (partner endpoints, keys) go in git-ignored `deploy/env/<service>.env`.
+A service's own local secrets (credentials, keys) go in git-ignored `deploy/env/<service>.env`; its endpoints stay in Git.
 
 This creates `services/order-sync/` (pom, `Application`, `OrderSyncRoutes`, test, `application.yml`),
 adds the module to `services/pom.xml`, registers it with the next free port in `config/services.yml`,

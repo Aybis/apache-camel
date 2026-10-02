@@ -10,6 +10,15 @@ COMPOSE=(docker compose -f "$ROOT/deploy/docker-compose.yml" -f "$ROOT/deploy/do
 
 case "${1:-up}" in
   up)
+    # Local database passwords: generated once into git-ignored deploy/.env, which Compose reads.
+    if [[ ! -f "$ROOT/deploy/.env" ]]; then
+      ( # subshell: the restrictive umask must not apply to the jars built below
+        umask 077
+        echo "POSTGRES_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$ROOT/deploy/.env"
+        echo "SERVICE_DB_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')" >> "$ROOT/deploy/.env"
+      )
+      echo "Generated local database passwords in deploy/.env"
+    fi
     (cd "$ROOT" && mvn -B -q package -DskipTests)
     "${COMPOSE[@]}" up -d --build
     echo

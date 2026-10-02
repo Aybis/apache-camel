@@ -41,6 +41,12 @@ if [[ ! "$NAME" =~ ^[a-z][a-z0-9-]{1,48}[a-z0-9]$ ]]; then
   echo "Service name must be kebab-case (a-z, 0-9, -), 3-50 chars, e.g. order-sync" >&2
   exit 2
 fi
+# Names that would collide with PostgreSQL's own roles/databases or the platform's own components.
+case "$NAME" in
+  postgres|console|db-provision|template0|template1|pg-*)
+    echo "Service name '$NAME' is reserved (PostgreSQL or platform component)" >&2
+    exit 2 ;;
+esac
 if [[ ! "$DOMAIN" =~ ^[a-z][a-z0-9-]*$ ]]; then
   echo "Domain must be lower-case kebab-case, e.g. orders" >&2
   exit 2

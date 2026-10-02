@@ -2,7 +2,6 @@ package com.integration.camel.console;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.ResultSet;
@@ -31,7 +30,6 @@ import com.integration.camel.console.Model.ServiceConfig;
 import com.integration.camel.console.Model.ServiceEntry;
 
 import tools.jackson.core.type.TypeReference;
-import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -69,7 +67,6 @@ public class ConfigStore implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
-        importLegacyFileStore(Path.of(properties.dataDir()));
         seedFromRegistry(Path.of(properties.registry()));
     }
 
@@ -163,51 +160,6 @@ public class ConfigStore implements ApplicationRunner {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-    }
-
-    /** One-time import of the pre-PostgreSQL file store (store.json + audit.jsonl), only into an empty database. */
-    void importLegacyFileStore(Path dataDir) {
-        Path store = dataDir.resolve("store.json");
-        if (!Files.exists(store) || jdbc.sql("SELECT count(*) FROM service").query(Long.class).single() > 0) {
-            return;
-        }
-        // The file format predates `localOnly`; missing fields read as false/null.
-        Map<String, ServiceEntry> legacy = mapper.readerFor(new TypeReference<Map<String, ServiceEntry>>() { })
-                .without(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
-                .readValue(store.toFile());
-        for (ServiceEntry e : legacy.values()) {
-            ServiceConfig c = e.config();
-            jdbc.sql("INSERT INTO service (name, domain, description, port) VALUES (?, ?, ?, ?)")
-                    .params(e.name(), e.domain(), e.description(), e.port()).update();
-            jdbc.sql("""
-                    INSERT INTO service_config (service, version, log_levels, properties, updated_at, updated_by)
-                    VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?)""")
-                    .params(e.name(), c.version(), json(c.logLevels()), json(c.properties()),
-                            c.updatedAt() == null ? null : Timestamp.from(c.updatedAt()), c.updatedBy())
-                    .update();
-        }
-        Path audit = dataDir.resolve("audit.jsonl");
-        int imported = 0;
-        if (Files.exists(audit)) {
-            try {
-                for (String line : Files.readAllLines(audit, StandardCharsets.UTF_8)) {
-                    if (line.isBlank()) {
-                        continue;
-                    }
-                    AuditEntry a = mapper.readValue(line, AuditEntry.class);
-                    jdbc.sql("""
-                            INSERT INTO config_audit (at, service, changed_by, comment, from_version, to_version, log_levels, properties)
-                            VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb) ON CONFLICT DO NOTHING""")
-                            .params(Timestamp.from(a.at()), a.service(), a.changedBy(), a.comment(), a.fromVersion(),
-                                    a.toVersion(), json(a.logLevels()), json(a.properties()))
-                            .update();
-                    imported++;
-                }
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
-        }
-        LOG.info("Imported {} service(s) and {} audit entries from the legacy file store {}", legacy.size(), imported, store);
     }
 
     // ---------- mapping ----------

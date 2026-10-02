@@ -22,7 +22,8 @@ services:
     ports:
       - "8101:8080"
     depends_on:
-      - console
+      console:
+        condition: service_started
     restart: unless-stopped
   payment-gateway:
     build:
@@ -46,7 +47,8 @@ services:
     ports:
       - "8102:8080"
     depends_on:
-      - console
+      console:
+        condition: service_started
     restart: unless-stopped
   bank-simulator:
     build:
@@ -71,5 +73,6 @@ services:
     ports:
       - "8103:8080"
     depends_on:
-      - console
+      console:
+        condition: service_started
     restart: unless-stopped

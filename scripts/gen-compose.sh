@@ -2,7 +2,7 @@
 # Regenerate deploy/docker-compose.services.yml from config/services.yml.
 # Do not edit the generated file by hand.
 #
-# Per-service environment (credentials, partner endpoints) is read from optional, git-ignored files:
+# Per-service secrets (credentials, keys; never endpoints, which live in Git) come from optional, git-ignored files:
 #   deploy/env/<service>.env                  your local overrides
 #   services/<service>/dev/.keys/dev.env      written by a service's own dev tooling, if it has any
 # Services marked `local-only: true` in the registry get the label camel.platform.local-only=true.
@@ -28,7 +28,7 @@ OUT="$ROOT/deploy/docker-compose.services.yml"
         db = name; gsub("-", "_", db)
         printf "      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/%s\n", db
         printf "      SPRING_DATASOURCE_USERNAME: %s\n", db
-        printf "      SPRING_DATASOURCE_PASSWORD: ${SERVICE_DB_PASSWORD:-local-dev-only}\n"
+        printf "      SPRING_DATASOURCE_PASSWORD: ${SERVICE_DB_PASSWORD:?}\n"
       }
       printf "    env_file:\n"
       printf "      - path: env/%s.env\n        required: false\n", name
