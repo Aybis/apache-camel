@@ -43,6 +43,10 @@ dashboards, redeliveries and error logs have data straight away.
 bash scripts/new-service.sh order-sync --domain orders --description "Syncs orders from SAP to WMS"
 ```
 
+Add `--local-only` for a development or test helper such as a partner simulator: it runs in the local
+stack but `scripts/deployable-services.sh` (the list any release or production manifest must use) leaves it out.
+A service's own local variables (partner endpoints, keys) go in git-ignored `deploy/env/<service>.env`.
+
 This creates `services/order-sync/` (pom, `Application`, `OrderSyncRoutes`, test, `application.yml`),
 adds the module to `services/pom.xml`, registers it with the next free port in `config/services.yml`,
 and regenerates `deploy/docker-compose.services.yml`. Then implement the routes.

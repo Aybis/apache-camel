@@ -32,6 +32,13 @@ message flows. Read this before adding or migrating a service.
 7. Every service keeps a Camel test (`@CamelSpringBootTest`, `platform.console.enabled=false`).
 8. Secrets never go in the console store or YAML; use env vars / Kubernetes Secrets / a vault. Connection
    settings (endpoints, hosts, queue managers, channels) live in Git; the console rejects such keys.
+   Locally, a service's variables go in git-ignored `deploy/env/<service>.env` (or the service's own
+   `dev/.keys/dev.env`); `scripts/gen-compose.sh` wires both in as optional `env_file`s.
+9. Nested Camel calls: wrap a `ProducerTemplate` call made inside a processor in
+   `com.integration.camel.platform.MdcScope.preserving(...)`. The nested exchange inherits the caller's
+   correlation ID automatically; without `MdcScope` the caller's log lines after the call lose it.
+10. Development/test helpers (simulators, mocks) are created with `new-service.sh ... --local-only`.
+    Anything that releases or deploys takes its list from `scripts/deployable-services.sh`, never from `services/`.
 
 ## Rules for payments (services/payment-gateway)
 Details and the API are in `services/payment-gateway/README.md`.
@@ -46,8 +53,8 @@ Details and the API are in `services/payment-gateway/README.md`.
 5. Bank calls that can arrive twice (VA payment notifications) are applied once, keyed by the bank's payment id.
 6. Credentials and private keys come only from the environment; dev keys come from
    `services/bank-simulator/dev/dev-keys.sh` and are git-ignored. bank-simulator is local/test only.
-7. Wrap nested `ProducerTemplate` calls made inside a processor with `MdcScope.preserving(...)`, or the
-   correlation ID disappears from the logs after the call.
+7. Wrap nested `ProducerTemplate` calls made inside a processor with `MdcScope.preserving(...)` (the platform's
+   `com.integration.camel.platform.MdcScope`; general rule 9), or the correlation ID disappears from the logs.
 8. Every payment behaviour change gets a case in `PaymentGatewayFlowTest`, which runs against the simulator.
 
 
