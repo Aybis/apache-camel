@@ -81,8 +81,8 @@ PostgreSQL 18, following the platform convention: its own database and login rol
 | Money is exact | `NUMERIC(19,2)`, status values constrained by CHECK; larger amounts are refused (400, or "amount mismatch" for notifications) |
 
 Account numbers and names (the `request` column and the events) never reach the logs: the default
-events endpoint logs headers only, failed events are logged without their body, and the driver leaves row
-values out of error messages (`logServerErrorDetail=false`).
+events endpoint logs neither body nor headers, failed events are logged without their body, and the platform keeps
+bodies and row values out of its error logs (CLAUDE.md rule 12).
 
 Schema changes are new migration files (`V3__...sql`); never edit an applied one, give a slow one its own `SET LOCAL statement_timeout` (Flyway runs as the
 service role, limited to 5s per statement), and keep each one compatible

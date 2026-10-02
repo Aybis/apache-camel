@@ -52,8 +52,9 @@ public class PaymentApiConfiguration extends RouteConfigurationBuilder {
                     .process(ex -> error(ex, 500, "INTERNAL_ERROR", "Internal error; see logs for the correlation ID"))
                 .end();
 
-        // Not the platform dead letter channel: it logs the body, and payment events carry account numbers
-        // and names. The event is lost after the retries (a transactional outbox is the planned fix).
+        // Events move no money, so they are retried; when that fails, the log line names the event, payment id
+        // and status (never the body: it carries account numbers and names). The event is then lost; a
+        // transactional outbox is the planned fix.
         routeConfiguration(EVENTS_ID)
                 .onException(Exception.class).handled(true)
                     .maximumRedeliveries(3).redeliveryDelay(1000).backOffMultiplier(2).useExponentialBackOff()

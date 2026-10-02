@@ -12,9 +12,6 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/payment_gateway}
     hikari:
       schema: payment_gateway   # pool size and timeouts come from the global config
-      data-source-properties:
-        # Keep row values (account numbers, names) out of exception messages and logs.
-        logServerErrorDetail: false
   flyway:
     schemas: payment_gateway
     default-schema: payment_gateway
@@ -33,8 +30,9 @@ platform:
 payment:
   # Required in the X-Api-Key header when set. Empty = no check (local only).
   api-key: ${PAYMENT_API_KEY:}
-  # The log endpoint never prints the body: events carry account numbers and names.
-  events-uri: log:payment-events?level=INFO&showBody=false&showHeaders=true
+  # The log endpoint prints neither body nor headers (CLAUDE.md rule 12); the payment.event line
+  # before it names the event, payment id and status.
+  events-uri: log:payment-events?level=INFO&showBody=false
   reconciliation:
     interval: 30s
     first-check-after: 10s
