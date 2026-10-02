@@ -64,6 +64,12 @@ message flows. Read this before adding or migrating a service.
       PgBouncer in front; raise a service's pool only with a load test that shows it waits for connections.
     - Tests run against real PostgreSQL via Testcontainers (`@ServiceConnection`), never H2.
 
+12. Never log message bodies or headers by default: they carry account numbers, names and tokens. The default
+    dead letter channel logs exchange ID, route, body type and exception only. To debug one service, set
+    `platform.error-handling.log-body=true` (masked by `PlatformMaskingFormatter`, 1000 chars) and turn it off
+    again. Database services keep pgJDBC `logServerErrorDetail=false` (global config), so PostgreSQL's
+    "Failing row contains" values stay out of exceptions.
+
 ## Rules for payments (services/payment-gateway)
 Details and the API are in `services/payment-gateway/README.md`.
 1. One bank-neutral API (`/api/payments/v1`). Bank-specific code lives only in `adapter/<bank>/`; the `api`,

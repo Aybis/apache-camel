@@ -1,6 +1,7 @@
 package __PACKAGE__;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.apache.camel.CamelContext;
 import org.apache.camel.test.spring.junit6.CamelSpringBootTest;
@@ -56,5 +57,14 @@ class __CLASS__RoutesTest {
         jdbc.sql("UPDATE processed_message SET processed_at = now() - interval '400 days' WHERE message_id = 'msg-1'").update();
         assertThat(processedMessages.purge()).isEqualTo(1);
         assertThat(processedMessages.claim("msg-1")).isTrue();
+    }
+
+    @Test
+    void databaseErrorsDoNotCarryRowValues() {
+        String sql = "INSERT INTO processed_message (message_id) VALUES (?)";
+        jdbc.sql(sql).param("acct-1234567890").update();
+        // Platform default logServerErrorDetail=false: no "Key (message_id)=(...)" detail in the exception.
+        assertThatThrownBy(() -> jdbc.sql(sql).param("acct-1234567890").update())
+                .satisfies(e -> assertThat(String.valueOf(e) + e.getCause()).doesNotContain("1234567890"));
     }
 }

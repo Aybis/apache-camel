@@ -33,9 +33,13 @@ platform:
     maximum-redeliveries: 3
     redelivery-delay: 1000
     backoff-multiplier: 2.0
-    # Where exhausted messages go. Services that consume from IBM MQ must
-    # override this with a backout queue, e.g. jms:queue:ORDERS.BACKOUT
-    dead-letter-uri: log:platform.dead-letter?level=ERROR&showHeaders=true&showBody=true&showException=true
+    # Where exhausted messages go. Empty = an ERROR line on logger platform.dead-letter with exchange ID,
+    # route, body type and exception, but no headers and no body (they carry account numbers, names, tokens).
+    # Services that consume from IBM MQ set a backout queue instead, e.g. jms:queue:ORDERS.BACKOUT
+    dead-letter-uri:
+    # Opt-in per service, for debugging: add the body to that line, masked (PlatformMaskingFormatter) and cut
+    # to 1000 characters.
+    log-body: false
 
 spring:
   application:
@@ -44,6 +48,9 @@ spring:
   # credentials come from SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD, never from YAML.
   datasource:
     hikari:
+      # pgJDBC: keep PostgreSQL's DETAIL ("Failing row contains (...)", key values) out of exceptions and logs.
+      data-source-properties:
+        logServerErrorDetail: false
       # Each instance may open up to 10 and keeps 2 idle; see the connection budget in CLAUDE.md rule 11.
       maximum-pool-size: 10
       minimum-idle: 2
