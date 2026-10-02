@@ -71,6 +71,15 @@ class ApiControllerTest {
     @Autowired
     ConfigStore store;
 
+    @Autowired
+    LegacyFileImport legacyImport;
+
+    @Autowired
+    javax.sql.DataSource dataSource;
+
+    @Autowired
+    ConsoleProperties properties;
+
     @Test
     void registryServicesAreListedAsNeverSeen() throws Exception {
         mvc.perform(get("/api/services/order-sync"))
@@ -168,5 +177,9 @@ class ApiControllerTest {
                 .andExpect(jsonPath("$.localOnly").value(false));
         org.assertj.core.api.Assertions.assertThat(store.audit("legacy-svc", 10))
                 .extracting(Model.AuditEntry::comment).containsExactly("quieter", "first");
+
+        // A second run (another replica, a restart) finds the marker and imports nothing again.
+        legacyImport.importOnce(dataSource, "console", java.nio.file.Path.of(properties.dataDir()));
+        org.assertj.core.api.Assertions.assertThat(store.audit("legacy-svc", 10)).hasSize(2);
     }
 }

@@ -32,7 +32,7 @@ bash scripts/stack.sh up        # builds jars and images, starts everything
 | Console | http://localhost:8090 |
 | Grafana | http://localhost:3000 (admin / admin; anonymous viewing on) |
 | Prometheus | http://localhost:9090 |
-| PostgreSQL | localhost:5432 (admin user `postgres`, password `local-dev-only`; one database per service) |
+| PostgreSQL | localhost:5432, this machine only (admin user `postgres`; passwords are generated into git-ignored `deploy/.env`) |
 | sample-service | http://localhost:8101/api/sample-service/ping |
 
 `sample-service` simulates orders every few seconds and fails about one in ten attempts, so the
