@@ -82,9 +82,9 @@ with the previous release (expand, then contract).
 ## Running locally against the simulator
 
 ```bash
+export SPRING_DATASOURCE_USERNAME=payment_gateway SPRING_DATASOURCE_PASSWORD="$(openssl rand -hex 16)"
 docker run -d --name payments-db -p 5432:5432 -e POSTGRES_DB=payment_gateway \
-  -e POSTGRES_USER=payment_gateway -e POSTGRES_PASSWORD=local-only postgres:18.6-alpine
-export SPRING_DATASOURCE_USERNAME=payment_gateway SPRING_DATASOURCE_PASSWORD=local-only
+  -e POSTGRES_USER=payment_gateway -e POSTGRES_PASSWORD="$SPRING_DATASOURCE_PASSWORD" postgres:18.6-alpine
 mvn -B -pl services/bank-simulator,services/payment-gateway -am package
 bash services/bank-simulator/dev/dev-keys.sh                 # throwaway keys, git-ignored
 set -a; source services/bank-simulator/dev/.keys/dev.env; set +a
