@@ -9,6 +9,7 @@ Local PostgreSQL setup for the Docker Compose stack.
 - Local passwords: `POSTGRES_PASSWORD` (admin user `postgres`) and `SERVICE_DB_PASSWORD` (all service roles),
   both defaulting to `local-dev-only`. Local only; shared environments get a managed PostgreSQL with a
   separate secret per service.
+- `max_connections` is 300 locally (default 100 is too few for 20 services with pools of 10).
 - Data lives in the `postgres-data` volume; `scripts/stack.sh reset` deletes it.
 
 Rules for services using a database: CLAUDE.md rule 11.

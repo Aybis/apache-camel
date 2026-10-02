@@ -10,7 +10,10 @@ spring:
     # Password only from SPRING_DATASOURCE_PASSWORD (environment), never from this file.
     hikari:
       maximum-pool-size: 5
+      minimum-idle: 1
+      schema: console
   flyway:
+    default-schema: console
     # Schema is owned by this service: src/main/resources/db/migration
     locations: classpath:db/migration
 

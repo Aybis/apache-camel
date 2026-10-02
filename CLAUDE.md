@@ -11,7 +11,7 @@ message flows. Read this before adding or migrating a service.
   `service/domain/environment` tags, health probes, console client (pulls settings, heartbeats).
 - `services/<name>/` — one folder per service, created ONLY with `scripts/new-service.sh`.
 - `console/` — management console (settings store + audit, status, log search over Loki, dashboard).
-- `deploy/` — local stack (PostgreSQL, Loki, Prometheus, Alloy, Grafana, console, services). Dashboards are generated
+- `deploy/` — local stack (Loki, Prometheus, Alloy, Grafana, console, services). Dashboards are generated
   by `deploy/grafana/build_dashboards.py`; never hand-edit the JSON.
 - `config/services.yml` — service registry; maintained by the script.
 
@@ -52,7 +52,12 @@ message flows. Read this before adding or migrating a service.
       start-up. Never edit a migration that has run anywhere. Breaking changes ship as expand, then contract.
     - Idempotency and money-safety rules are enforced with constraints (primary/unique keys), not only in code:
       insert the key first, act second. Keep transactions short; never hold one open across a partner call.
-    - `JdbcClient` by default; JPA only when the model needs it. Pool size defaults to 10 (global config).
+    - Tables live in a schema named like the database (`order_sync`), owned by the service's role, never in
+      `public`; `new-service.sh --database` sets `spring.flyway.default-schema` and the Hikari `schema` to it.
+    - `JdbcClient` by default; JPA only when the model needs it.
+    - Connection budget: pool defaults to max 10 / min idle 2 per instance (global config). Size
+      `max_connections` for the sum of every instance's maximum (20 services x 2 replicas x 10 = 400) or put
+      PgBouncer in front; raise a service's pool only with a load test that shows it waits for connections.
     - Tests run against real PostgreSQL via Testcontainers (`@ServiceConnection`), never H2.
 
 ## Rules for payments (services/payment-gateway)

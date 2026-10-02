@@ -44,7 +44,9 @@ spring:
   # credentials come from SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD, never from YAML.
   datasource:
     hikari:
+      # Each instance may open up to 10 and keeps 2 idle; see the connection budget in CLAUDE.md rule 11.
       maximum-pool-size: 10
+      minimum-idle: 2
       connection-timeout: 5000  # ms
   flyway:
     locations: classpath:db/migration

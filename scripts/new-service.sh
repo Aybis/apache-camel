@@ -91,7 +91,7 @@ if [[ "$DATABASE" == "true" ]]; then
   DB_NAME="$(echo "$NAME" | tr '-' '_')"
   awk -v db="$DB_NAME" '
     { print }
-    /^    name: / && !done { print "  datasource:"; print "    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/" db "}"; print "    username: ${SPRING_DATASOURCE_USERNAME:" db "}"; done=1 }
+    /^    name: / && !done { print "  datasource:"; print "    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/" db "}"; print "    username: ${SPRING_DATASOURCE_USERNAME:" db "}"; print "    hikari:"; print "      schema: " db; print "  flyway:"; print "    default-schema: " db; done=1 }
   ' "$TARGET/src/main/resources/application.yml" > "$TARGET/application.yml.tmp" \
     && mv "$TARGET/application.yml.tmp" "$TARGET/src/main/resources/application.yml"
 fi
