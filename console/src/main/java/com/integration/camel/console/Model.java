@@ -11,7 +11,8 @@ public final class Model {
     }
 
     /** A service as stored: registry fields plus its current configuration. */
-    public record ServiceEntry(String name, String domain, String description, Integer port, ServiceConfig config) {
+    public record ServiceEntry(String name, String domain, String description, Integer port, boolean localOnly,
+                               ServiceConfig config) {
     }
 
     /** What services pull. logLevels apply live; properties apply on the next restart. */
@@ -46,7 +47,7 @@ public final class Model {
     /** UP: a fresh heartbeat; STALE: heartbeats stopped; UNKNOWN: never seen; DOWN: reported stopping. */
     public enum Status { UP, STALE, DOWN, UNKNOWN }
 
-    public record ServiceView(String name, String domain, String description, Integer port, Status status,
+    public record ServiceView(String name, String domain, String description, Integer port, boolean localOnly, Status status,
                               long configVersion, boolean configPending, List<InstanceView> instances) {
     }
 

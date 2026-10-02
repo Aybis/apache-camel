@@ -24,11 +24,13 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 import com.integration.camel.paymentgateway.api.BankOutcome;
 import com.integration.camel.paymentgateway.api.Transfer;
@@ -61,18 +63,13 @@ class PaymentGatewayFlowTest {
     @Import({BankSimulatorRoutes.class, SimulatorRouteConfiguration.class})
     @EnableConfigurationProperties(SimulatorProperties.class)
     static class WithSimulator {
-    }
 
-    /**
-     * A real PostgreSQL (the local stack's version), started once for the class; {@code @ServiceConnection} points
-     * the datasource at it and the schema comes from the Flyway migrations.
-     */
-    @ServiceConnection
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6-alpine")
-            .withDatabaseName("payment_gateway").withUsername("payment_gateway");
-
-    static {
-        POSTGRES.start();
+        /** Real PostgreSQL, same version as the local stack; the schema comes from the Flyway migrations. */
+        @Bean
+        @ServiceConnection
+        PostgreSQLContainer postgres() {
+            return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"));
+        }
     }
 
     @Autowired

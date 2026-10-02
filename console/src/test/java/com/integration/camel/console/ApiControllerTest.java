@@ -12,15 +12,32 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@Import(ApiControllerTest.Postgres.class)
 class ApiControllerTest {
+
+    /** Same major version as the local stack (deploy/docker-compose.yml); never H2. */
+    @TestConfiguration(proxyBeanMethods = false)
+    static class Postgres {
+        @Bean
+        @ServiceConnection
+        PostgreSQLContainer postgres() {
+            return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"));
+        }
+    }
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) throws Exception {
@@ -33,13 +50,26 @@ class ApiControllerTest {
                     port: 8101
                     description: "Syncs orders"
                 """);
-        registry.add("console.data-dir", () -> dir.resolve("data").toString());
+        // A store written by the pre-PostgreSQL console (no localOnly field): imported once at start-up.
+        Path data = Files.createDirectories(dir.resolve("data"));
+        Files.writeString(data.resolve("store.json"), """
+                {"legacy-svc":{"name":"legacy-svc","domain":"orders","description":"old","port":8199,
+                 "config":{"service":"legacy-svc","version":2,"logLevels":{"ROOT":"WARN"},"properties":{},
+                 "updatedAt":"2026-10-01T10:00:00Z","updatedBy":"Ama"}}}""");
+        Files.writeString(data.resolve("audit.jsonl"), """
+                {"at":"2026-10-01T09:00:00Z","service":"legacy-svc","changedBy":"Ama","comment":"first","fromVersion":0,"toVersion":1,"logLevels":{},"properties":{}}
+                {"at":"2026-10-01T10:00:00Z","service":"legacy-svc","changedBy":"Ama","comment":"quieter","fromVersion":1,"toVersion":2,"logLevels":{"ROOT":"WARN"},"properties":{}}
+                """);
+        registry.add("console.data-dir", data::toString);
         registry.add("console.registry", registryFile::toString);
         registry.add("console.write-token", () -> "secret");
     }
 
     @Autowired
     MockMvc mvc;
+
+    @Autowired
+    ConfigStore store;
 
     @Test
     void registryServicesAreListedAsNeverSeen() throws Exception {
@@ -108,5 +138,35 @@ class ApiControllerTest {
         org.assertj.core.api.Assertions.assertThat(
                         LokiClient.logQl("order-sync", java.util.List.of("error", "bogus"), "a`\"b", null))
                 .isEqualTo("{service=\"order-sync\", level=~\"ERROR\"} |= `a\"b`");
+    }
+
+    @Test
+    void concurrentSavesGetConsecutiveVersionsAndOneAuditEntryEach() throws Exception {
+        store.registerIfAbsent("concurrency-check", "test");
+        int saves = 8;
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(saves)) {
+            var futures = java.util.stream.IntStream.range(0, saves)
+                    .mapToObj(i -> pool.submit(() -> store.update("concurrency-check",
+                            new Model.ConfigChange(java.util.Map.of("ROOT", "INFO"), java.util.Map.of(), "t" + i, null))))
+                    .toList();
+            for (var f : futures) {
+                f.get();
+            }
+        }
+        org.assertj.core.api.Assertions.assertThat(store.find("concurrency-check").orElseThrow().config().version())
+                .isEqualTo(saves);
+        org.assertj.core.api.Assertions.assertThat(store.audit("concurrency-check", 100))
+                .extracting(Model.AuditEntry::toVersion)
+                .containsExactlyInAnyOrder(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L);
+    }
+
+    @Test
+    void legacyFileStoreIsImportedOnce() throws Exception {
+        mvc.perform(get("/api/services/legacy-svc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.configVersion").value(2))
+                .andExpect(jsonPath("$.localOnly").value(false));
+        org.assertj.core.api.Assertions.assertThat(store.audit("legacy-svc", 10))
+                .extracting(Model.AuditEntry::comment).containsExactly("quieter", "first");
     }
 }

@@ -14,7 +14,7 @@ apache-camel/
 │   ├── payment-gateway/             bank-neutral payment API, one adapter per bank (BNI first)
 │   └── bank-simulator/              local SNAP BI bank for tests and development only
 ├── console/                         management console (port 8090)
-├── deploy/                          Docker Compose: Loki, Prometheus, Alloy, Grafana, console, services
+├── deploy/                          Docker Compose: PostgreSQL, Loki, Prometheus, Alloy, Grafana, console, services
 ├── templates/service/               template used by new-service.sh
 └── scripts/                         new-service.sh, gen-compose.sh, stack.sh
 ```
@@ -32,6 +32,7 @@ bash scripts/stack.sh up        # builds jars and images, starts everything
 | Console | http://localhost:8090 |
 | Grafana | http://localhost:3000 (admin / admin; anonymous viewing on) |
 | Prometheus | http://localhost:9090 |
+| PostgreSQL | localhost:5432 (admin user `postgres`, password `local-dev-only`; one database per service) |
 | sample-service | http://localhost:8101/api/sample-service/ping |
 
 `sample-service` simulates orders every few seconds and fails about one in ten attempts, so the
@@ -43,9 +44,23 @@ dashboards, redeliveries and error logs have data straight away.
 bash scripts/new-service.sh order-sync --domain orders --description "Syncs orders from SAP to WMS"
 ```
 
+Add `--local-only` for a development or test helper such as a partner simulator: it runs in the local
+stack but `scripts/deployable-services.sh` (the list any release or production manifest must use) leaves it out.
+A service's own local variables (partner endpoints, keys) go in git-ignored `deploy/env/<service>.env`.
+
 This creates `services/order-sync/` (pom, `Application`, `OrderSyncRoutes`, test, `application.yml`),
 adds the module to `services/pom.xml`, registers it with the next free port in `config/services.yml`,
 and regenerates `deploy/docker-compose.services.yml`. Then implement the routes.
+
+A service that keeps state gets its own PostgreSQL database with `--database`:
+
+```bash
+bash scripts/new-service.sh ledger-sync --domain finance --database
+```
+
+That adds JDBC, Flyway (`src/main/resources/db/migration/V1__create_schema.sql`) and a Testcontainers test,
+and marks `database: true` in the registry. On the next `stack.sh up` the `db-provision` job creates the
+`ledger_sync` database and role, and the service receives `SPRING_DATASOURCE_*`. Rules: CLAUDE.md rule 11.
 
 ## What every service gets from the starter
 
@@ -89,7 +104,9 @@ by level, error logs, all logs with search, JVM). Edit `deploy/grafana/build_das
 
 - **Security**: the console has only an optional shared write token (`CONSOLE_WRITE_TOKEN`). Put it behind
   SSO (OIDC) and role-based access before any shared environment; Grafana anonymous access must be turned off.
-- **Console store**: a JSON file with one writer. Move to PostgreSQL before running more than one replica.
+- **PostgreSQL**: the local stack runs one PostgreSQL with a shared local password. Shared environments use a
+  managed PostgreSQL 18 with a separate role and secret per service, backups and point-in-time recovery.
+  The console keeps settings, audit trail and heartbeats in its own database, so it can run several replicas.
 - **Kubernetes**: replace Compose with Helm/Kustomize; Alloy uses `discovery.kubernetes` and pod labels
   `camel.platform/service` and `camel.platform/domain` instead of Docker labels. Drop `instance` as a Loki
   label (pod churn raises cardinality) and keep it as structured metadata.

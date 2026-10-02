@@ -8,7 +8,8 @@ import org.slf4j.MDC;
 
 /**
  * Ensures every exchange carries a correlation ID: taken from the configured inbound header,
- * else from the JMS correlation ID, else generated. It is set back on the header (so it travels
+ * else from the JMS correlation ID, else from the MDC (a nested call made from inside another
+ * exchange on the same thread inherits the caller's ID), else generated. It is set back on the header (so it travels
  * to downstream systems), as the exchange property {@value #PROPERTY}, and in the MDC so it
  * appears on every log line and can be searched in Loki.
  */
@@ -31,6 +32,9 @@ public class CorrelationIdProcessor implements Processor {
         }
         if (id == null || id.isBlank()) {
             id = exchange.getIn().getHeader("JMSCorrelationID", String.class);
+        }
+        if (id == null || id.isBlank()) {
+            id = MDC.get(MDC_KEY);
         }
         if (id == null || id.isBlank()) {
             id = UUID.randomUUID().toString();

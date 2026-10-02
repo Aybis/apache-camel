@@ -30,6 +30,7 @@ import com.integration.camel.paymentgateway.spi.InboundCall;
 import com.integration.camel.paymentgateway.spi.InboundRequest;
 import com.integration.camel.paymentgateway.spi.InboundResponse;
 import com.integration.camel.platform.CorrelationIdProcessor;
+import com.integration.camel.platform.MdcScope;
 
 /**
  * Bank-neutral payment logic: validation, idempotency, persistence before sending, outcome handling,

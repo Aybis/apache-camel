@@ -41,6 +41,9 @@ class PlatformStarterTest {
     @EndpointInject("mock:dead")
     MockEndpoint dead;
 
+    @EndpointInject("mock:nested")
+    MockEndpoint nested;
+
     @Test
     void globalMonitoringConfigIsLoadedWithLowestPrecedence() {
         assertThat(environment.getProperty("logging.structured.format.console")).isEqualTo("ecs");
@@ -60,6 +63,28 @@ class PlatformStarterTest {
         String generated = ok.getExchanges().get(0).getIn().getHeader("X-Correlation-Id", String.class);
         assertThat(generated).isNotBlank();
         assertThat(ok.getExchanges().get(1).getIn().getHeader("X-Correlation-Id")).isEqualTo("abc-123");
+    }
+
+    @Test
+    void separateTopLevelMessagesNeverShareACorrelationId() throws Exception {
+        ok.reset();
+        ok.expectedMessageCount(2);
+        producer.sendBody("direct:ok", "first");
+        producer.sendBody("direct:ok", "second");
+        ok.assertIsSatisfied();
+        assertThat(ok.getExchanges().get(0).getIn().getHeader("X-Correlation-Id"))
+                .isNotEqualTo(ok.getExchanges().get(1).getIn().getHeader("X-Correlation-Id"));
+    }
+
+    @Test
+    void nestedCallsKeepTheCallersCorrelationIdAndMdc() throws Exception {
+        nested.reset();
+        nested.expectedMessageCount(1);
+        Exchange outer = producer.request("direct:outer", e -> e.getIn().setHeader("X-Correlation-Id", "outer-123"));
+        nested.assertIsSatisfied();
+
+        assertThat(nested.getExchanges().get(0).getIn().getHeader("X-Correlation-Id")).isEqualTo("outer-123");
+        assertThat(outer.getProperty("mdcAfterNestedCall")).isEqualTo("outer-123");
     }
 
     @Test
@@ -89,6 +114,13 @@ class PlatformStarterTest {
                 public void configure() {
                     from("direct:ok").routeId("ok").to("mock:ok");
                     from("direct:fail").routeId("fail").throwException(new IllegalStateException("boom"));
+                    from("direct:outer").routeId("outer")
+                            .process(exchange -> {
+                                ProducerTemplate template = exchange.getContext().createProducerTemplate();
+                                MdcScope.preserving(() -> template.sendBody("direct:inner", "nested"));
+                                exchange.setProperty("mdcAfterNestedCall", org.slf4j.MDC.get("correlationId"));
+                            });
+                    from("direct:inner").routeId("inner").to("mock:nested");
                     from("direct:tx").routeId("tx").routeConfigurationId(PlatformRouteConfiguration.TRANSACTED)
                             .throwException(new IllegalStateException("boom"));
                 }

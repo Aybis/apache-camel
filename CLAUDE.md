@@ -32,6 +32,33 @@ message flows. Read this before adding or migrating a service.
 7. Every service keeps a Camel test (`@CamelSpringBootTest`, `platform.console.enabled=false`).
 8. Secrets never go in the console store or YAML; use env vars / Kubernetes Secrets / a vault. Connection
    settings (endpoints, hosts, queue managers, channels) live in Git; the console rejects such keys.
+   Locally, a service's variables go in git-ignored `deploy/env/<service>.env` (or the service's own
+   `dev/.keys/dev.env`); `scripts/gen-compose.sh` wires both in as optional `env_file`s.
+9. Nested Camel calls: wrap a `ProducerTemplate` call made inside a processor in
+   `com.integration.camel.platform.MdcScope.preserving(...)`. The nested exchange inherits the caller's
+   correlation ID automatically; without `MdcScope` the caller's log lines after the call lose it.
+10. Development/test helpers (simulators, mocks) are created with `new-service.sh ... --local-only`.
+    Anything that releases or deploys takes its list from `scripts/deployable-services.sh`, never from `services/`.
+
+11. Database (PostgreSQL 18; local image `postgres:18.6-alpine`):
+    - Only when a service needs state: `new-service.sh ... --database`. It adds JDBC + Flyway, a first migration,
+      a Testcontainers test and `database: true` in the registry. To add one later, copy what that flag
+      generates (`templates/service-database/`) and set `database: true` in `config/services.yml`.
+    - One database and one role per service, both named after the service with `-` as `_`
+      (`order-sync` -> `order_sync`). A service never reads or writes another service's database; it calls its API.
+    - Connection and credentials only from `SPRING_DATASOURCE_URL`, `_USERNAME`, `_PASSWORD` (environment /
+      Kubernetes Secret). Locally, the `db-provision` job creates the database and `gen-compose.sh` passes them.
+    - Schema changes only as Flyway migrations in `src/main/resources/db/migration/V<n>__<what>.sql`, applied at
+      start-up. Never edit a migration that has run anywhere. Breaking changes ship as expand, then contract.
+    - Idempotency and money-safety rules are enforced with constraints (primary/unique keys), not only in code:
+      insert the key first, act second. Keep transactions short; never hold one open across a partner call.
+    - Tables live in a schema named like the database (`order_sync`), owned by the service's role, never in
+      `public`; `new-service.sh --database` sets `spring.flyway.default-schema` and the Hikari `schema` to it.
+    - `JdbcClient` by default; JPA only when the model needs it.
+    - Connection budget: pool defaults to max 10 / min idle 2 per instance (global config). Size
+      `max_connections` for the sum of every instance's maximum (20 services x 2 replicas x 10 = 400) or put
+      PgBouncer in front; raise a service's pool only with a load test that shows it waits for connections.
+    - Tests run against real PostgreSQL via Testcontainers (`@ServiceConnection`), never H2.
 
 ## Rules for payments (services/payment-gateway)
 Details and the API are in `services/payment-gateway/README.md`.
@@ -48,8 +75,8 @@ Details and the API are in `services/payment-gateway/README.md`.
 5. Bank calls that can arrive twice (VA payment notifications) are applied once, keyed by the bank's payment id.
 6. Credentials and private keys come only from the environment; dev keys come from
    `services/bank-simulator/dev/dev-keys.sh` and are git-ignored. bank-simulator is local/test only.
-7. Wrap nested `ProducerTemplate` calls made inside a processor with `MdcScope.preserving(...)`, or the
-   correlation ID disappears from the logs after the call.
+7. Wrap nested `ProducerTemplate` calls made inside a processor with `MdcScope.preserving(...)` (the platform's
+   `com.integration.camel.platform.MdcScope`; general rule 9), or the correlation ID disappears from the logs.
 8. Every payment behaviour change gets a case in `PaymentGatewayFlowTest`, which runs against the simulator
    and a real PostgreSQL (Testcontainers; the build needs Docker).
 

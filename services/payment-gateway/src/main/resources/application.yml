@@ -11,8 +11,7 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/payment_gateway}
     hikari:
-      schema: payment_gateway
-      maximum-pool-size: 10
+      schema: payment_gateway   # pool size and timeouts come from the global config
   flyway:
     schemas: payment_gateway
     default-schema: payment_gateway
