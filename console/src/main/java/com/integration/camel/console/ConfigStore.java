@@ -45,8 +45,8 @@ public class ConfigStore {
      * (standards doc): a typo here could repoint production traffic with no code review.
      */
     private static final Pattern CONNECTION_KEY = Pattern.compile(
-            ".*(url|uri|host|port|endpoint|address|password|passwd|secret|token|credential|username|"
-                    + "key-store|trust-store|keystore|truststore|queue-manager|queuemanager|channel|conn-name|ccdt|ssl).*");
+            "(.*[.\\-])?(url|uri|host|hosts|port|endpoint|address|password|passwd|secret|token|credential|username|"
+                    + "key-store|trust-store|keystore|truststore|queue-manager|queuemanager|channel|conn-name|ccdt|ssl)([.\\-].*)?");
     private static final List<String> LEVELS = List.of("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF");
 
     private final JsonMapper mapper;
