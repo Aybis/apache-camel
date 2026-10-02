@@ -1,6 +1,7 @@
 package com.integration.camel.paymentgateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -10,6 +11,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -17,6 +19,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+import org.apache.camel.CamelContext;
+import org.apache.camel.component.mock.MockEndpoint;
 import org.apache.camel.test.spring.junit6.CamelSpringBootTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +31,7 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -34,6 +39,7 @@ import org.testcontainers.utility.DockerImageName;
 
 import com.integration.camel.paymentgateway.api.BankOutcome;
 import com.integration.camel.paymentgateway.api.Transfer;
+import com.integration.camel.paymentgateway.core.PaymentService;
 import com.integration.camel.paymentgateway.core.PaymentStore;
 
 import com.integration.camel.banksimulator.BankSimulatorRoutes;
@@ -78,12 +84,19 @@ class PaymentGatewayFlowTest {
     @Autowired
     PaymentStore store;
 
+    @Autowired
+    PaymentService service;
+
+    @Autowired
+    CamelContext camel;
+
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry r) throws Exception {
         KeyPair gateway = rsa();
         KeyPair bank = rsa();
         r.add("server.port", () -> PORT);
         r.add("payment.api-key", () -> API_KEY);
+        r.add("payment.events-uri", () -> "mock:payment-events");
         r.add("payment.reconciliation.interval", () -> "1h");
         r.add("payment.reconciliation.first-check-after", () -> "0s");
         r.add("payment.banks.bni.enabled", () -> "true");
@@ -174,6 +187,54 @@ class PaymentGatewayFlowTest {
         Transfer stored = store.findTransfer("T-STALE-1").orElseThrow();
         assertThat(stored.statusChecks()).isEqualTo(open.statusChecks() + 1);
         assertThat(stored.bankResponseMessage()).isEqualTo("first");
+    }
+
+    @Test
+    void eachDueTransferIsClaimedByOneReplicaAtATime() throws Exception {
+        post("/api/payments/v1/transfers", transfer("T-CLAIM-1", "009", null, "1.77"));
+        // Two replicas claim at the same moment: the transfer goes to exactly one of them.
+        Callable<List<Transfer>> claim = () -> store.claimDueTransfers(Duration.ZERO, 20, Duration.ofMinutes(5), 500);
+        List<Future<List<Transfer>>> both = Executors.newFixedThreadPool(2).invokeAll(List.of(claim, claim));
+        long claimed = 0;
+        for (Future<List<Transfer>> f : both) {
+            claimed += f.get().stream().filter(t -> t.id().equals("T-CLAIM-1")).count();
+        }
+        assertThat(claimed).isEqualTo(1);
+        // Within the lease nobody claims it again; once it has run out, it is due again.
+        assertThat(store.claimDueTransfers(Duration.ZERO, 20, Duration.ofMinutes(5), 500))
+                .noneMatch(t -> t.id().equals("T-CLAIM-1"));
+        jdbc.update("UPDATE transfer SET next_check_at = now() - interval '1 second' WHERE id = 'T-CLAIM-1'");
+        assertThat(store.claimDueTransfers(Duration.ZERO, 20, Duration.ofMinutes(5), 500))
+                .anyMatch(t -> t.id().equals("T-CLAIM-1"));
+    }
+
+    @Test
+    void aBankRequestIdIsUsedOnce() throws Exception {
+        post("/api/payments/v1/transfers", transfer("T-EXT-1", "009", null, "3.00"));
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO transfer (id, bank, request, amount, currency, type, status, external_id, created_at,
+                    updated_at)
+                SELECT 'T-EXT-2', bank, request, amount, currency, type, status, external_id, now(), now()
+                FROM transfer WHERE id = 'T-EXT-1'""")).isInstanceOf(DuplicateKeyException.class);
+    }
+
+    @Test
+    void aBankAnswerThatContradictsAFinalStatusGoesToManualReview() throws Exception {
+        MockEndpoint events = camel.getEndpoint("mock:payment-events", MockEndpoint.class);
+        // .77: processed by the bank but answered too late, so stored as UNKNOWN.
+        post("/api/payments/v1/transfers", transfer("T-CONTRA-1", "009", null, "2.77"));
+        Transfer seen = store.findTransfer("T-CONTRA-1").orElseThrow();
+        assertThat(seen.status().name()).isEqualTo("UNKNOWN");
+        // Meanwhile another replica gave up on it (not found after the grace period).
+        jdbc.update("UPDATE transfer SET status = 'FAILED' WHERE id = 'T-CONTRA-1'");
+        events.reset();
+        // The bank now says SUCCESS: the stored FAILED stays, and a person is told.
+        Transfer result = service.checkStatus(seen);
+        assertThat(result.status().name()).isEqualTo("FAILED");
+        assertThat(events.getReceivedExchanges()).anyMatch(e ->
+                "transfer.manual-review".equals(e.getIn().getHeader("paymentEvent"))
+                        && "T-CONTRA-1".equals(e.getIn().getHeader("paymentId"))
+                        && e.getIn().getBody(String.class).contains("\"bankAnswer\""));
     }
 
     @Test

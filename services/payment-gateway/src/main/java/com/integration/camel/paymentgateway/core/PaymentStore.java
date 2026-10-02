@@ -1,5 +1,6 @@
 package com.integration.camel.paymentgateway.core;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
@@ -33,8 +34,13 @@ public interface PaymentStore {
 
     Optional<Transfer> findTransfer(String id);
 
-    /** Transfers whose outcome is not final (PENDING or UNKNOWN). */
-    List<Transfer> findOpenTransfers();
+    /**
+     * Claims up to {@code limit} unresolved transfers (PENDING or UNKNOWN) that are due for a status check: last
+     * changed at least {@code firstCheckAfter} ago, fewer than {@code maxChecks} checks, and not claimed by
+     * anyone within the last {@code lease}. A claimed transfer is not returned to another caller (replica) until
+     * its lease runs out, so each one is checked with the bank once per round.
+     */
+    List<Transfer> claimDueTransfers(Duration firstCheckAfter, int maxChecks, Duration lease, int limit);
 
     Optional<VirtualAccount> insertIfAbsent(VirtualAccount virtualAccount);
 

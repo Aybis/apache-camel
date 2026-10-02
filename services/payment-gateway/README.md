@@ -73,10 +73,17 @@ PostgreSQL 18, following the platform convention: its own database and login rol
 | Saved before sending | the insert is its own committed statement, before the bank is called |
 | A final status is never overwritten | every UPDATE is guarded by `status IN ('PENDING','UNKNOWN')` (or `<> 'SUCCESS'` for accounts) |
 | One writer per status check | transfer UPDATEs also require the `status_checks` count the writer read; the loser reloads and publishes nothing |
+| Each replica asks the bank about different transfers | reconciliation claims due rows with `FOR UPDATE SKIP LOCKED` and a lease (`next_check_at`, `payment.reconciliation.claim-lease`) |
+| A late bank answer that contradicts a final status is not lost | the stored status stays, and a `transfer.manual-review` event carries both |
+| One bank request id per request | unique index on `(bank, external_id)` |
 | A payment notification is credited once | row lock (`SELECT ... FOR UPDATE`) on the account while deciding; unique index on (bank, payment id) |
 | Money is exact | `NUMERIC(19,2)`, status values constrained by CHECK; larger amounts are refused (400, or "amount mismatch" for notifications) |
 
-Schema changes are new migration files (`V2__...sql`); never edit an applied one, and keep each one compatible
+Account numbers and names (the `request` column and the events) never reach the logs: the default
+events endpoint logs headers only, failed events are logged without their body, and the driver leaves row
+values out of error messages (`logServerErrorDetail=false`).
+
+Schema changes are new migration files (`V3__...sql`); never edit an applied one, and keep each one compatible
 with the previous release (expand, then contract).
 
 ## Running locally against the simulator
@@ -102,7 +109,7 @@ the build needs Docker), including concurrent duplicate requests and duplicate n
 
 | Gap | Risk | What production needs |
 |---|---|---|
-| Events sent synchronously | If the events endpoint is down, the event goes to the dead letter log only. | Transactional outbox. |
+| Events sent synchronously | If the events endpoint is still down after 3 retries, the event is lost (its id and status are logged). | Transactional outbox. |
 | BNI contract from the SNAP standard | BNI may differ in paths, mandatory `additionalInfo` fields, or run virtual accounts on BNI eCollection instead of SNAP. | Check against BNI's portal and signature test vectors at onboarding. |
 | Interbank without prior account inquiry | A wrong beneficiary name is only caught by the bank. | SNAP account inquiry (service 16) before interbank transfers. |
 | "Not found" becomes FAILED after 10 minutes | If BNI's status API lags longer, a processed transfer could be reported failed. | Confirm BNI's guidance; tune `not-found-grace`. |

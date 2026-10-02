@@ -32,6 +32,8 @@ public class PaymentProperties {
          * because some banks register the transaction asynchronously.
          */
         private Duration notFoundGrace = Duration.ofMinutes(10);
+        /** How long a replica owns a transfer it claimed for a status check; others skip it meanwhile. */
+        private Duration claimLease = Duration.ofMinutes(2);
 
         public Duration getInterval() { return interval; }
         public void setInterval(Duration interval) { this.interval = interval; }
@@ -39,6 +41,8 @@ public class PaymentProperties {
         public void setFirstCheckAfter(Duration firstCheckAfter) { this.firstCheckAfter = firstCheckAfter; }
         public int getMaxChecks() { return maxChecks; }
         public void setMaxChecks(int maxChecks) { this.maxChecks = maxChecks; }
+        public Duration getClaimLease() { return claimLease; }
+        public void setClaimLease(Duration claimLease) { this.claimLease = claimLease; }
         public Duration getNotFoundGrace() { return notFoundGrace; }
         public void setNotFoundGrace(Duration notFoundGrace) { this.notFoundGrace = notFoundGrace; }
     }

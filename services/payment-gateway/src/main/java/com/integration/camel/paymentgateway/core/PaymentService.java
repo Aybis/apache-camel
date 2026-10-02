@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
@@ -102,8 +103,10 @@ public class PaymentService {
         Transfer done = t.withOutcome(outcome);
         if (!store.update(done, t.statusChecks())) {
             // Reconciliation resolved it while the call was in flight; the stored state wins and was published.
+            Transfer stored = reload(t.id());
             LOG.warn("Transfer {} was resolved concurrently; keeping the stored outcome", t.id());
-            return new Submitted<>(reload(t.id()), true);
+            flagIfContradicted(stored, done);
+            return new Submitted<>(stored, true);
         }
         publish("transfer", done.id(), done.status(), done);
         return new Submitted<>(done, true);
@@ -117,18 +120,14 @@ public class PaymentService {
     /** Asks the bank about every unresolved transfer that is due. Called by the reconciliation route. */
     public int reconcile() {
         PaymentProperties.Reconciliation cfg = properties.getReconciliation();
-        Instant due = Instant.now().minus(cfg.getFirstCheckAfter());
-        int checked = 0;
-        for (Transfer t : store.findOpenTransfers()) {
-            if (t.updatedAt().isBefore(due) && t.statusChecks() < cfg.getMaxChecks()) {
-                checkStatus(t);
-                checked++;
-            }
-        }
-        return checked;
+        List<Transfer> due = store.claimDueTransfers(cfg.getFirstCheckAfter(), cfg.getMaxChecks(),
+                cfg.getClaimLease(), CLAIM_BATCH);
+        due.forEach(this::checkStatus);
+        return due.size();
     }
 
-    private Transfer checkStatus(Transfer t) {
+    /** Asks the bank about one unresolved transfer and stores the answer (reconciliation and {@code refresh}). */
+    public Transfer checkStatus(Transfer t) {
         BankAdapter bank = adapters.require(t.request().bank(), Capability.TRANSFER_STATUS);
         BankOutcome o;
         try {
@@ -147,7 +146,9 @@ public class PaymentService {
         Transfer updated = t.withStatusCheck(o);
         if (!store.update(updated, t.statusChecks())) {
             // Another instance or request checked it meanwhile; it owns the event.
-            return reload(t.id());
+            Transfer stored = reload(t.id());
+            flagIfContradicted(stored, updated);
+            return stored;
         }
         if (updated.status().isFinal()) {
             publish("transfer", updated.id(), updated.status(), updated);
@@ -335,12 +336,29 @@ public class PaymentService {
     /** Amounts are stored as NUMERIC(19,2): at most 17 digits before the decimal point. */
     static final int MAX_INTEGER_DIGITS = 17;
 
+    /** Transfers claimed per reconciliation round and replica. */
+    static final int CLAIM_BATCH = 500;
+
     static boolean validAmount(BigDecimal amount) {
         if (amount == null || amount.signum() <= 0) {
             return false;
         }
         BigDecimal a = amount.stripTrailingZeros();
         return a.scale() <= 2 && a.precision() - a.scale() <= MAX_INTEGER_DIGITS;
+    }
+
+    /**
+     * A write that lost to a concurrent one normally carries the same answer. If both are final but differ (for
+     * example the transfer was marked FAILED after the not-found grace period and the bank now says SUCCESS),
+     * the stored state stays, and a person must look at it with the bank.
+     */
+    private void flagIfContradicted(Transfer stored, Transfer bankAnswer) {
+        if (stored.status().isFinal() && bankAnswer.status().isFinal() && stored.status() != bankAnswer.status()) {
+            LOG.error("Transfer {} is stored as {} but {} now answered {}; needs manual review", stored.id(),
+                    stored.status(), stored.request().bank(), bankAnswer.status());
+            publish("transfer.manual-review", stored.id(), stored.status(),
+                    Map.of("stored", stored, "bankAnswer", bankAnswer));
+        }
     }
 
     private Transfer reload(String id) {

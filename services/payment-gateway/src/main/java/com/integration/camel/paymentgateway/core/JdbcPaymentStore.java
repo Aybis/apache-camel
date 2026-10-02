@@ -2,8 +2,10 @@ package com.integration.camel.paymentgateway.core;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
@@ -78,11 +80,26 @@ public class JdbcPaymentStore implements PaymentStore {
                 .stream().findFirst();
     }
 
+    /**
+     * Claims due transfers in one statement: {@code FOR UPDATE SKIP LOCKED} keeps two replicas from claiming the
+     * same row at the same moment, and the lease ({@code next_check_at}) keeps them from claiming it again until
+     * the lease runs out. Times come from the database clock, so replica clock skew does not matter.
+     */
     @Override
-    public List<Transfer> findOpenTransfers() {
-        return jdbc.query("SELECT " + TRANSFER_COLUMNS
-                + " FROM transfer WHERE status IN ('PENDING', 'UNKNOWN') ORDER BY updated_at LIMIT 500",
-                transferMapper());
+    public List<Transfer> claimDueTransfers(Duration firstCheckAfter, int maxChecks, Duration lease, int limit) {
+        return jdbc.query("""
+                WITH due AS (
+                    SELECT id FROM transfer
+                    WHERE status IN ('PENDING', 'UNKNOWN') AND status_checks < ?
+                      AND updated_at <= now() - make_interval(secs => ?)
+                      AND (next_check_at IS NULL OR next_check_at <= now())
+                    ORDER BY updated_at
+                    LIMIT ?
+                    FOR UPDATE SKIP LOCKED)
+                UPDATE transfer t SET next_check_at = now() + make_interval(secs => ?)
+                FROM due WHERE t.id = due.id
+                RETURNING""" + " t." + TRANSFER_COLUMNS.replace(", ", ", t."),
+                transferMapper(), maxChecks, seconds(firstCheckAfter), limit, seconds(lease));
     }
 
     private RowMapper<Transfer> transferMapper() {
@@ -144,13 +161,18 @@ public class JdbcPaymentStore implements PaymentStore {
 
     // ------------------------------------------------------------------ helpers
 
-    private static Timestamp ts(Instant instant) {
-        return instant == null ? null : Timestamp.from(instant);
+    /** TIMESTAMPTZ is bound as {@code OffsetDateTime} (UTC), as pgJDBC documents for java.time. */
+    private static OffsetDateTime ts(Instant instant) {
+        return instant == null ? null : instant.atOffset(ZoneOffset.UTC);
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {
-        Timestamp t = rs.getTimestamp(column);
+        OffsetDateTime t = rs.getObject(column, OffsetDateTime.class);
         return t == null ? null : t.toInstant();
+    }
+
+    private static double seconds(Duration d) {
+        return d.toMillis() / 1000.0;
     }
 
     private static String truncate(String message) {

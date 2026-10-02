@@ -141,6 +141,7 @@ public class PaymentRoutes extends RouteBuilder {
         // Final outcomes go to downstream systems through a configurable endpoint (log, JMS queue, Kafka...).
         from(PaymentService.EVENTS_ENDPOINT)
                 .routeId("payment-gateway-events")
+                .routeConfigurationId(PaymentApiConfiguration.EVENTS_ID)
                 .process(ex -> {
                     PlatformLog.event(log, ex, "payment.event", "type", ex.getIn().getHeader("paymentEvent"),
                             "id", ex.getIn().getHeader("paymentId"),
