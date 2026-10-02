@@ -157,6 +157,7 @@ public class $CLASS implements BankAdapter {
 
     @Override
     public InboundResponse respondVaPayment(InboundCall call, VaPaymentDecision decision) {
+        // TRY_LATER means nothing was recorded: answer with an error the bank retries, never with success.
         return new InboundResponse(500, "{\"error\":\"not implemented\"}");
     }
 }

@@ -51,7 +51,10 @@ public class PlatformProperties {
         private int maximumRedeliveries = 3;
         private long redeliveryDelay = 1000;
         private double backoffMultiplier = 2.0;
-        private String deadLetterUri = "log:platform.dead-letter?level=ERROR";
+        /** Empty: log the failure (no body) to logger platform.dead-letter. Set for a real dead letter queue. */
+        private String deadLetterUri;
+        /** Include the (masked, truncated) body in the dead letter log line. Off: bodies carry personal data. */
+        private boolean logBody;
 
         public int getMaximumRedeliveries() { return maximumRedeliveries; }
         public void setMaximumRedeliveries(int maximumRedeliveries) { this.maximumRedeliveries = maximumRedeliveries; }
@@ -61,5 +64,7 @@ public class PlatformProperties {
         public void setBackoffMultiplier(double backoffMultiplier) { this.backoffMultiplier = backoffMultiplier; }
         public String getDeadLetterUri() { return deadLetterUri; }
         public void setDeadLetterUri(String deadLetterUri) { this.deadLetterUri = deadLetterUri; }
+        public boolean isLogBody() { return logBody; }
+        public void setLogBody(boolean logBody) { this.logBody = logBody; }
     }
 }

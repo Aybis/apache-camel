@@ -2,14 +2,12 @@ package com.integration.camel.console;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -18,7 +16,12 @@ import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import org.yaml.snakeyaml.Yaml;
 
 import com.integration.camel.console.Model.AuditEntry;
@@ -30,14 +33,16 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * File-backed store of service settings with an append-only audit trail.
- * Writes are atomic (temp file then move). Swap for a database before running more than
- * one console replica: this store assumes a single writer.
+ * Service settings with an append-only audit trail, stored in PostgreSQL (schema in
+ * db/migration). Safe with several console replicas: a change locks the service's settings row,
+ * so concurrent saves get consecutive versions instead of overwriting each other.
  */
 @Component
-public class ConfigStore {
+@Order(0)
+public class ConfigStore implements ApplicationRunner {
 
     private static final Logger LOG = LoggerFactory.getLogger(ConfigStore.class);
+    private static final TypeReference<Map<String, String>> STRING_MAP = new TypeReference<>() { };
     private static final Pattern LOGGER_NAME = Pattern.compile("ROOT|[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)*");
     private static final Pattern PROPERTY_KEY = Pattern.compile("[a-z0-9][a-z0-9.\\-\\[\\]_]*");
     /**
@@ -49,31 +54,87 @@ public class ConfigStore {
                     + "key-store|trust-store|keystore|truststore|queue-manager|queuemanager|channel|conn-name|ccdt|ssl)([.\\-].*)?");
     private static final List<String> LEVELS = List.of("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF");
 
+    private final JdbcClient jdbc;
     private final JsonMapper mapper;
-    private final Path storeFile;
-    private final Path auditFile;
-    private final Map<String, ServiceEntry> services = new TreeMap<>();
+    private final ConsoleProperties properties;
 
-    public ConfigStore(ConsoleProperties properties, JsonMapper mapper) throws IOException {
+    public ConfigStore(JdbcClient jdbc, JsonMapper mapper, ConsoleProperties properties) {
+        this.jdbc = jdbc;
         this.mapper = mapper;
-        Path dir = Path.of(properties.dataDir());
-        Files.createDirectories(dir);
-        this.storeFile = dir.resolve("store.json");
-        this.auditFile = dir.resolve("audit.jsonl");
-        load();
+        this.properties = properties;
+    }
+
+    @Override
+    @Transactional
+    public void run(ApplicationArguments args) {
         seedFromRegistry(Path.of(properties.registry()));
     }
 
-    private void load() throws IOException {
-        if (Files.exists(storeFile)) {
-            Map<String, ServiceEntry> loaded = mapper.readValue(storeFile.toFile(), new TypeReference<>() { });
-            services.putAll(loaded);
-            LOG.info("Loaded {} service(s) from {}", services.size(), storeFile);
+    // ---------- reads ----------
+
+    public List<ServiceEntry> all() {
+        return jdbc.sql(SELECT_ENTRY + " ORDER BY s.name").query(this::entry).list();
+    }
+
+    public Optional<ServiceEntry> find(String name) {
+        return jdbc.sql(SELECT_ENTRY + " WHERE s.name = ?").param(name).query(this::entry).optional();
+    }
+
+    public List<AuditEntry> audit(String service, int limit) {
+        String sql = "SELECT * FROM config_audit" + (service == null ? "" : " WHERE service = :service")
+                + " ORDER BY at DESC, id DESC LIMIT :limit";
+        JdbcClient.StatementSpec spec = jdbc.sql(sql).param("limit", limit);
+        if (service != null) {
+            spec = spec.param("service", service);
+        }
+        return spec.query((rs, i) -> new AuditEntry(instant(rs, "at"), rs.getString("service"),
+                rs.getString("changed_by"), rs.getString("comment"), rs.getLong("from_version"),
+                rs.getLong("to_version"), map(rs.getString("log_levels")), map(rs.getString("properties")))).list();
+    }
+
+    // ---------- writes ----------
+
+    /** Adds a service first seen through its heartbeat. */
+    @Transactional
+    public void registerIfAbsent(String name, String domain) {
+        int added = jdbc.sql("INSERT INTO service (name, domain) VALUES (?, ?) ON CONFLICT (name) DO NOTHING")
+                .params(name, domain == null ? "unassigned" : domain).update();
+        if (added > 0) {
+            jdbc.sql("INSERT INTO service_config (service) VALUES (?) ON CONFLICT DO NOTHING").param(name).update();
+            LOG.info("Registered {} from its first heartbeat", name);
         }
     }
 
+    @Transactional
+    public ServiceConfig update(String name, ConfigChange change) {
+        Map<String, String> levels = normaliseLevels(change.logLevels());
+        Map<String, String> props = validateProperties(change.properties());
+        String by = change.changedBy() == null || change.changedBy().isBlank() ? "unknown" : change.changedBy().trim();
+
+        Long previous = jdbc.sql("SELECT version FROM service_config WHERE service = ? FOR UPDATE")
+                .param(name).query(Long.class).optional()
+                .orElseThrow(() -> new IllegalArgumentException("Unknown service " + name));
+        long next = previous + 1;
+        Instant now = Instant.now();
+        jdbc.sql("""
+                UPDATE service_config SET version = ?, log_levels = ?::jsonb, properties = ?::jsonb,
+                       updated_at = ?, updated_by = ? WHERE service = ?""")
+                .params(next, json(levels), json(props), Timestamp.from(now), by, name).update();
+        jdbc.sql("""
+                INSERT INTO config_audit (at, service, changed_by, comment, from_version, to_version, log_levels, properties)
+                VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb)""")
+                .params(Timestamp.from(now), name, by, change.comment(), previous, next, json(levels), json(props))
+                .update();
+        LOG.atInfo().addKeyValue("event.action", "config.changed").addKeyValue("labels.service", name)
+                .addKeyValue("labels.version", next).addKeyValue("labels.changedBy", by)
+                .log("Configuration of {} changed to version {}", name, next);
+        return new ServiceConfig(name, next, levels, props, now, by);
+    }
+
+    // ---------- start-up ----------
+
     @SuppressWarnings("unchecked")
-    private void seedFromRegistry(Path registry) {
+    void seedFromRegistry(Path registry) {
         if (!Files.exists(registry)) {
             LOG.warn("Service registry {} not found; services will appear when they first send a heartbeat", registry);
             return;
@@ -84,78 +145,50 @@ public class ConfigStore {
                     ? List.of() : (List<Map<String, Object>>) root.get("services");
             for (Map<String, Object> e : entries) {
                 String name = String.valueOf(e.get("name"));
-                ServiceEntry existing = services.get(name);
-                ServiceConfig config = existing != null ? existing.config() : ServiceConfig.initial(name);
-                services.put(name, new ServiceEntry(name, String.valueOf(e.getOrDefault("domain", "unassigned")),
-                        String.valueOf(e.getOrDefault("description", "")),
-                        e.get("port") instanceof Number n ? n.intValue() : null, config));
+                jdbc.sql("""
+                        INSERT INTO service (name, domain, description, port, local_only) VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (name) DO UPDATE SET domain = EXCLUDED.domain, description = EXCLUDED.description,
+                            port = EXCLUDED.port, local_only = EXCLUDED.local_only""")
+                        .params(name, String.valueOf(e.getOrDefault("domain", "unassigned")),
+                                String.valueOf(e.getOrDefault("description", "")),
+                                e.get("port") instanceof Number n ? n.intValue() : null,
+                                Boolean.TRUE.equals(e.get("local-only")))
+                        .update();
+                jdbc.sql("INSERT INTO service_config (service) VALUES (?) ON CONFLICT DO NOTHING").param(name).update();
             }
-            persist();
             LOG.info("Registry {} lists {} service(s)", registry, entries.size());
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
-    public synchronized List<ServiceEntry> all() {
-        return List.copyOf(services.values());
+    // ---------- mapping ----------
+
+    private static final String SELECT_ENTRY = """
+            SELECT s.name, s.domain, s.description, s.port, s.local_only,
+                   c.version, c.log_levels, c.properties, c.updated_at, c.updated_by
+            FROM service s JOIN service_config c ON c.service = s.name""";
+
+    private ServiceEntry entry(ResultSet rs, int row) throws SQLException {
+        String name = rs.getString("name");
+        int port = rs.getInt("port");
+        return new ServiceEntry(name, rs.getString("domain"), rs.getString("description"),
+                rs.wasNull() ? null : port, rs.getBoolean("local_only"),
+                new ServiceConfig(name, rs.getLong("version"), map(rs.getString("log_levels")),
+                        map(rs.getString("properties")), instant(rs, "updated_at"), rs.getString("updated_by")));
     }
 
-    public synchronized Optional<ServiceEntry> find(String name) {
-        return Optional.ofNullable(services.get(name));
+    private static Instant instant(ResultSet rs, String column) throws SQLException {
+        Timestamp ts = rs.getTimestamp(column);
+        return ts == null ? null : ts.toInstant();
     }
 
-    /** Adds a service first seen through its heartbeat. */
-    public synchronized void registerIfAbsent(String name, String domain) {
-        if (!services.containsKey(name)) {
-            services.put(name, new ServiceEntry(name, domain == null ? "unassigned" : domain, "", null,
-                    ServiceConfig.initial(name)));
-            persist();
-            LOG.info("Registered {} from its first heartbeat", name);
-        }
+    private Map<String, String> map(String json) {
+        return json == null ? Map.of() : new TreeMap<>(mapper.readValue(json, STRING_MAP));
     }
 
-    public synchronized ServiceConfig update(String name, ConfigChange change) {
-        ServiceEntry entry = services.get(name);
-        if (entry == null) {
-            throw new IllegalArgumentException("Unknown service " + name);
-        }
-        Map<String, String> levels = normaliseLevels(change.logLevels());
-        Map<String, String> props = validateProperties(change.properties());
-        String by = change.changedBy() == null || change.changedBy().isBlank() ? "unknown" : change.changedBy().trim();
-
-        ServiceConfig previous = entry.config();
-        ServiceConfig next = new ServiceConfig(name, previous.version() + 1, levels, props, Instant.now(), by);
-        services.put(name, new ServiceEntry(entry.name(), entry.domain(), entry.description(), entry.port(), next));
-        persist();
-        appendAudit(new AuditEntry(next.updatedAt(), name, by, change.comment(), previous.version(), next.version(),
-                levels, props));
-        LOG.atInfo().addKeyValue("event", "config.changed").addKeyValue("service", name)
-                .addKeyValue("version", next.version()).addKeyValue("changedBy", by)
-                .log("Configuration of {} changed to version {}", name, next.version());
-        return next;
-    }
-
-    public List<AuditEntry> audit(String service, int limit) {
-        if (!Files.exists(auditFile)) {
-            return List.of();
-        }
-        try {
-            List<AuditEntry> result = new ArrayList<>();
-            for (String line : Files.readAllLines(auditFile, StandardCharsets.UTF_8)) {
-                if (line.isBlank()) {
-                    continue;
-                }
-                AuditEntry e = mapper.readValue(line, AuditEntry.class);
-                if (service == null || service.equals(e.service())) {
-                    result.add(e);
-                }
-            }
-            Collections.reverse(result);
-            return result.subList(0, Math.min(limit, result.size()));
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+    private String json(Map<String, String> map) {
+        return mapper.writeValueAsString(map == null ? Map.of() : new TreeMap<>(map));
     }
 
     private static Map<String, String> normaliseLevels(Map<String, String> input) {
@@ -200,24 +233,5 @@ public class ConfigStore {
             out.put(k, value == null ? "" : value);
         });
         return out;
-    }
-
-    private void persist() {
-        try {
-            Path tmp = storeFile.resolveSibling("store.json.tmp");
-            mapper.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), services);
-            Files.move(tmp, storeFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Cannot write " + storeFile, e);
-        }
-    }
-
-    private void appendAudit(AuditEntry entry) {
-        try {
-            Files.writeString(auditFile, mapper.writeValueAsString(entry) + "\n", StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Cannot write " + auditFile, e);
-        }
     }
 }

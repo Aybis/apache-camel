@@ -22,6 +22,9 @@ public class PaymentApiConfiguration extends RouteConfigurationBuilder {
 
     public static final String ID = "payment-api";
 
+    /** Event delivery: retried (no money moves), and a failure is logged without the body. */
+    public static final String EVENTS_ID = "payment-events";
+
     private final CorrelationIdProcessor correlation;
     private final JsonMapper json;
 
@@ -47,6 +50,16 @@ public class PaymentApiConfiguration extends RouteConfigurationBuilder {
                 .onException(Exception.class).handled(true)
                     .log(org.apache.camel.LoggingLevel.ERROR, "Unhandled error: ${exception.stacktrace}")
                     .process(ex -> error(ex, 500, "INTERNAL_ERROR", "Internal error; see logs for the correlation ID"))
+                .end();
+
+        // Events move no money, so they are retried; when that fails, the log line names the event, payment id
+        // and status (never the body: it carries account numbers and names). The event is then lost; a
+        // transactional outbox is the planned fix.
+        routeConfiguration(EVENTS_ID)
+                .onException(Exception.class).handled(true)
+                    .maximumRedeliveries(3).redeliveryDelay(1000).backOffMultiplier(2).useExponentialBackOff()
+                    .log(org.apache.camel.LoggingLevel.ERROR, "Payment event ${header.paymentEvent} for "
+                            + "${header.paymentId} (${header.paymentStatus}) could not be delivered: ${exception.message}")
                 .end();
     }
 

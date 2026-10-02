@@ -1,6 +1,7 @@
 # Service registry: one entry per service folder under services/.
 # Maintained by scripts/new-service.sh. The console seeds its service list from
 # this file and scripts/gen-compose.sh builds deploy/docker-compose.services.yml from it.
+# `local-only: true` marks development/test helpers; scripts/deployable-services.sh excludes them.
 services:
   - name: sample-service
     domain: demo
@@ -10,7 +11,9 @@ services:
     domain: payments
     port: 8102
     description: "Bank-neutral payment API (transfers, virtual accounts) with one adapter per bank"
+    database: true
   - name: bank-simulator
     domain: payments
     port: 8103
     description: "Local SNAP BI bank simulator (BNI profile) for development and tests; never deployed to production"
+    local-only: true

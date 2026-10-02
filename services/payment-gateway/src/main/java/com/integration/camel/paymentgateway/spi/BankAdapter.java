@@ -61,7 +61,11 @@ public interface BankAdapter {
     record VaCreation(String virtualAccountNo, BankOutcome outcome) {
     }
 
+    /**
+     * The core's decision on a payment notification. {@code TRY_LATER}: nothing was recorded (for example the
+     * database timed out); the adapter must answer with an error the bank retries, never with success.
+     */
     enum VaPaymentDecision {
-        ACCEPTED, DUPLICATE, UNKNOWN_ACCOUNT, AMOUNT_MISMATCH, NOT_PAYABLE
+        ACCEPTED, DUPLICATE, UNKNOWN_ACCOUNT, AMOUNT_MISMATCH, NOT_PAYABLE, TRY_LATER
     }
 }

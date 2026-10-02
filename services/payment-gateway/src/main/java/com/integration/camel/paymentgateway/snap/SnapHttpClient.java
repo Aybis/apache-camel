@@ -25,7 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.integration.camel.paymentgateway.core.BankProperties;
-import com.integration.camel.paymentgateway.core.MdcScope;
+import com.integration.camel.platform.MdcScope;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;

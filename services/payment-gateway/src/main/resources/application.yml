@@ -4,12 +4,24 @@
 spring:
   application:
     name: payment-gateway
+  # PostgreSQL 18, platform convention: one database and one login role per service, both
+  # named payment_gateway. URL, user and password come only from the environment
+  # (SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD). The
+  # service owns the payment_gateway schema; Flyway creates and migrates it at start-up.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/payment_gateway}
+    hikari:
+      schema: payment_gateway   # pool size and timeouts come from the global config
+  flyway:
+    schemas: payment_gateway
+    default-schema: payment_gateway
 
 server:
   port: ${SERVER_PORT:8102}
 
 platform:
   domain: payments
+
 
 # ---------------------------------------------------------------------------
 # Payment gateway. Connection settings are versioned here; secrets (client
@@ -18,7 +30,9 @@ platform:
 payment:
   # Required in the X-Api-Key header when set. Empty = no check (local only).
   api-key: ${PAYMENT_API_KEY:}
-  events-uri: log:payment-events?level=INFO
+  # The log endpoint prints neither body nor headers (CLAUDE.md rule 12); the payment.event line
+  # before it names the event, payment id and status.
+  events-uri: log:payment-events?level=INFO&showBody=false
   reconciliation:
     interval: 30s
     first-check-after: 10s

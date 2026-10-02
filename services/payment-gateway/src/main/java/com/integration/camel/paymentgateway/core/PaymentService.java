@@ -1,9 +1,11 @@
 package com.integration.camel.paymentgateway.core;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
@@ -12,6 +14,9 @@ import org.apache.camel.ProducerTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.stereotype.Service;
 
 import com.integration.camel.paymentgateway.api.BankOutcome;
@@ -29,6 +34,7 @@ import com.integration.camel.paymentgateway.spi.InboundCall;
 import com.integration.camel.paymentgateway.spi.InboundRequest;
 import com.integration.camel.paymentgateway.spi.InboundResponse;
 import com.integration.camel.platform.CorrelationIdProcessor;
+import com.integration.camel.platform.MdcScope;
 
 /**
  * Bank-neutral payment logic: validation, idempotency, persistence before sending, outcome handling,
@@ -98,7 +104,23 @@ public class PaymentService {
             outcome = BankOutcome.unknown("adapter error: " + e.getMessage());
         }
         Transfer done = t.withOutcome(outcome);
-        store.update(done);
+        boolean saved;
+        try {
+            saved = store.update(done, t.statusChecks());
+        } catch (DataAccessException e) {
+            // The bank was called but its answer could not be saved: the transfer stays UNKNOWN in the store
+            // and reconciliation asks the bank. Never report the bank's answer as the stored state.
+            LOG.error("Transfer {}: bank answered {} but the result could not be saved ({}); left UNKNOWN for "
+                    + "reconciliation", t.id(), done.status(), e.getClass().getSimpleName());
+            return new Submitted<>(t, true);
+        }
+        if (!saved) {
+            // Reconciliation resolved it while the call was in flight; the stored state wins and was published.
+            Transfer stored = reload(t.id());
+            LOG.warn("Transfer {} was resolved concurrently; keeping the stored outcome", t.id());
+            flagIfContradicted(stored, done);
+            return new Submitted<>(stored, true);
+        }
         publish("transfer", done.id(), done.status(), done);
         return new Submitted<>(done, true);
     }
@@ -111,18 +133,22 @@ public class PaymentService {
     /** Asks the bank about every unresolved transfer that is due. Called by the reconciliation route. */
     public int reconcile() {
         PaymentProperties.Reconciliation cfg = properties.getReconciliation();
-        Instant due = Instant.now().minus(cfg.getFirstCheckAfter());
-        int checked = 0;
-        for (Transfer t : store.findOpenTransfers()) {
-            if (t.updatedAt().isBefore(due) && t.statusChecks() < cfg.getMaxChecks()) {
+        List<Transfer> due = store.claimDueTransfers(cfg.getFirstCheckAfter(), cfg.getMaxChecks(),
+                cfg.getClaimLease(), CLAIM_BATCH);
+        for (Transfer t : due) {
+            try {
                 checkStatus(t);
-                checked++;
+            } catch (DataAccessException e) {
+                // Not saved: the lease runs out and a later round asks the bank again.
+                LOG.warn("Status check of transfer {} not saved ({}); retried after the lease", t.id(),
+                        e.getClass().getSimpleName());
             }
         }
-        return checked;
+        return due.size();
     }
 
-    private Transfer checkStatus(Transfer t) {
+    /** Asks the bank about one unresolved transfer and stores the answer (reconciliation and {@code refresh}). */
+    public Transfer checkStatus(Transfer t) {
         BankAdapter bank = adapters.require(t.request().bank(), Capability.TRANSFER_STATUS);
         BankOutcome o;
         try {
@@ -139,7 +165,12 @@ public class PaymentService {
             o = new BankOutcome(PaymentStatus.PENDING, o.bankReference(), o.responseCode(), o.responseMessage());
         }
         Transfer updated = t.withStatusCheck(o);
-        store.update(updated);
+        if (!store.update(updated, t.statusChecks())) {
+            // Another instance or request checked it meanwhile; it owns the event.
+            Transfer stored = reload(t.id());
+            flagIfContradicted(stored, updated);
+            return stored;
+        }
         if (updated.status().isFinal()) {
             publish("transfer", updated.id(), updated.status(), updated);
         } else if (updated.statusChecks() >= properties.getReconciliation().getMaxChecks()) {
@@ -178,7 +209,18 @@ public class PaymentService {
             c = new BankAdapter.VaCreation(null, BankOutcome.unknown("adapter error: " + ex.getMessage()));
         }
         VirtualAccount done = va.withCreation(c.virtualAccountNo(), c.outcome());
-        store.update(done);
+        try {
+            if (!store.update(done)) {
+                // Paid in the meantime: the stored state wins.
+                return new Submitted<>(store.findVirtualAccount(done.id()).orElseThrow(), existing.isEmpty());
+            }
+        } catch (DuplicateKeyException e) {
+            // The number belongs to another reference (unique per bank in the database).
+            store.update(va.withCreation(null, new BankOutcome(PaymentStatus.FAILED, null, "DUPLICATE_NUMBER",
+                    "virtual account number " + c.virtualAccountNo() + " is already used by another reference")));
+            throw new PaymentException(409, "DUPLICATE_VIRTUAL_ACCOUNT",
+                    "Virtual account number " + c.virtualAccountNo() + " is already used by another reference");
+        }
         publish("virtual-account.created", done.id(), done.status(), done);
         return new Submitted<>(done, existing.isEmpty());
     }
@@ -199,30 +241,67 @@ public class PaymentService {
         return bank.respondVaPayment(call, decision);
     }
 
-    /** Applies a verified payment notification once; repeated notifications of the same payment are no-ops. */
-    synchronized VaPaymentDecision applyVaPayment(VaPaymentNotice n) {
-        var found = store.findVirtualAccountByNumber(n.bank(), n.virtualAccountNo());
-        if (found.isEmpty() || found.get().status() == PaymentStatus.FAILED) {
-            LOG.warn("Payment {} for unknown virtual account {} at {}", n.paymentRequestId(), n.virtualAccountNo(),
-                    n.bank());
-            return VaPaymentDecision.UNKNOWN_ACCOUNT;
+    /**
+     * Applies a verified payment notification once. The decision is taken while holding the account's row lock,
+     * so two deliveries of the same notification cannot both credit it; the database's unique index on the
+     * bank's payment id is the backstop. The event is published only after the credit is committed.
+     */
+    VaPaymentDecision applyVaPayment(VaPaymentNotice n) {
+        record Result(VaPaymentDecision decision, VirtualAccount paid) {
         }
-        VirtualAccount va = found.get();
-        if (va.status() == PaymentStatus.SUCCESS) {
-            return n.paymentRequestId().equals(va.paymentRequestId()) ? VaPaymentDecision.DUPLICATE
-                    : VaPaymentDecision.NOT_PAYABLE;
-        }
-        BigDecimal expected = va.request().amount();
-        if (expected != null && expected.compareTo(n.paidAmount()) != 0) {
+        if (!validAmount(n.paidAmount())) {
+            // Not a valid rupiah amount (or too large to store): never credit it.
+            LOG.warn("Payment {} for virtual account {} at {} has an invalid amount {}", n.paymentRequestId(),
+                    n.virtualAccountNo(), n.bank(), n.paidAmount());
             return VaPaymentDecision.AMOUNT_MISMATCH;
         }
-        if (va.request().expiresAt() != null && va.request().expiresAt().toInstant().isBefore(Instant.now())) {
+        Result result;
+        try {
+            result = store.withLockedVirtualAccount(n.bank(), n.virtualAccountNo(), found -> {
+                if (found.isEmpty() || found.get().status() == PaymentStatus.FAILED) {
+                    LOG.warn("Payment {} for unknown virtual account {} at {}", n.paymentRequestId(),
+                            n.virtualAccountNo(), n.bank());
+                    return new Result(VaPaymentDecision.UNKNOWN_ACCOUNT, null);
+                }
+                VirtualAccount va = found.get();
+                if (va.status() == PaymentStatus.SUCCESS) {
+                    return new Result(n.paymentRequestId().equals(va.paymentRequestId())
+                            ? VaPaymentDecision.DUPLICATE : VaPaymentDecision.NOT_PAYABLE, null);
+                }
+                BigDecimal expected = va.request().amount();
+                if (expected != null && expected.compareTo(n.paidAmount()) != 0) {
+                    return new Result(VaPaymentDecision.AMOUNT_MISMATCH, null);
+                }
+                if (va.request().expiresAt() != null
+                        && va.request().expiresAt().toInstant().isBefore(Instant.now())) {
+                    return new Result(VaPaymentDecision.NOT_PAYABLE, null);
+                }
+                VirtualAccount paid = va.withPayment(n);
+                if (!store.update(paid)) {
+                    // Cannot happen under the row lock unless the account was paid; refuse rather than guess.
+                    return new Result(VaPaymentDecision.NOT_PAYABLE, null);
+                }
+                return new Result(VaPaymentDecision.ACCEPTED, paid);
+            });
+        } catch (DuplicateKeyException e) {
+            // The bank's payment id already credited a different virtual account.
+            LOG.error("Payment {} from {} was already applied to another virtual account; refusing it for {}",
+                    n.paymentRequestId(), n.bank(), n.virtualAccountNo());
             return VaPaymentDecision.NOT_PAYABLE;
+        } catch (DataAccessException e) {
+            if (!isTimeout(e)) {
+                throw e;
+            }
+            // Lock or statement timeout: the transaction rolled back and nothing was credited. The bank retries,
+            // and the retry is applied once like any other delivery.
+            LOG.warn("Payment {} for virtual account {} at {} not recorded ({}); asking the bank to retry",
+                    n.paymentRequestId(), n.virtualAccountNo(), n.bank(), e.getClass().getSimpleName());
+            return VaPaymentDecision.TRY_LATER;
         }
-        VirtualAccount paid = va.withPayment(n);
-        store.update(paid);
-        publish("virtual-account.paid", paid.id(), paid.status(), paid);
-        return VaPaymentDecision.ACCEPTED;
+        if (result.paid() != null) {
+            publish("virtual-account.paid", result.paid().id(), result.paid().status(), result.paid());
+        }
+        return result.decision();
     }
 
     // ------------------------------------------------------------------ helpers
@@ -284,12 +363,62 @@ public class PaymentService {
         }
     }
 
+    /** Amounts are stored as NUMERIC(19,2): at most 17 digits before the decimal point. */
+    static final int MAX_INTEGER_DIGITS = 17;
+
+    /** Transfers claimed per reconciliation round and replica. */
+    static final int CLAIM_BATCH = 500;
+
+    static boolean validAmount(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) {
+            return false;
+        }
+        BigDecimal a = amount.stripTrailingZeros();
+        return a.scale() <= 2 && a.precision() - a.scale() <= MAX_INTEGER_DIGITS;
+    }
+
+    /**
+     * A write that lost to a concurrent one normally carries the same answer. If both are final but differ (for
+     * example the transfer was marked FAILED after the not-found grace period and the bank now says SUCCESS),
+     * the stored state stays, and a person must look at it with the bank.
+     */
+    private void flagIfContradicted(Transfer stored, Transfer bankAnswer) {
+        if (stored.status().isFinal() && bankAnswer.status().isFinal() && stored.status() != bankAnswer.status()) {
+            LOG.error("Transfer {} is stored as {} but {} now answered {}; needs manual review", stored.id(),
+                    stored.status(), stored.request().bank(), bankAnswer.status());
+            publish("transfer.manual-review", stored.id(), stored.status(),
+                    Map.of("stored", stored, "bankAnswer", bankAnswer));
+        }
+    }
+
+    /**
+     * The role's lock_timeout (SQLState 55P03) and statement_timeout (57014): the statement was cancelled and its
+     * transaction rolled back. Spring does not classify 55P03 as transient, so the SQL state is checked too.
+     */
+    static boolean isTimeout(DataAccessException e) {
+        if (e instanceof TransientDataAccessException) {
+            return true;
+        }
+        for (Throwable c = e; c != null; c = c.getCause()) {
+            if (c instanceof SQLException sql && ("55P03".equals(sql.getSQLState())
+                    || "57014".equals(sql.getSQLState()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Transfer reload(String id) {
+        return store.findTransfer(id).orElseThrow();
+    }
+
     private static BigDecimal requireAmount(BigDecimal amount) {
         if (amount == null) {
             throw PaymentException.invalid("amount is required");
         }
-        if (amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 2) {
-            throw PaymentException.invalid("amount must be positive with at most 2 decimals");
+        if (!validAmount(amount)) {
+            throw PaymentException.invalid("amount must be positive, with at most " + MAX_INTEGER_DIGITS
+                    + " digits before the decimal point and at most 2 decimals");
         }
         return amount.setScale(2);
     }

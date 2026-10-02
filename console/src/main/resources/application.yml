@@ -2,12 +2,31 @@ spring:
   application:
     name: console
 
+  # Platform database convention: one database and role per service, credentials only from the
+  # environment. The defaults below match the local Docker stack (scripts/stack.sh) and nothing else.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/console}
+    username: ${SPRING_DATASOURCE_USERNAME:console}
+    # Password only from SPRING_DATASOURCE_PASSWORD (environment), never from this file.
+    hikari:
+      # Keep PostgreSQL's DETAIL (row values) out of exceptions and logs, as the global config does for services.
+      data-source-properties:
+        logServerErrorDetail: false
+      maximum-pool-size: 5
+      minimum-idle: 1
+      schema: console
+  flyway:
+    default-schema: console
+    # Schema is owned by this service: src/main/resources/db/migration
+    locations: classpath:db/migration
+
 server:
   port: ${SERVER_PORT:8090}
   shutdown: graceful
 
 console:
-  # Where the store (store.json) and audit trail (audit.jsonl) are written.
+  # Legacy file store from before PostgreSQL. If store.json / audit.jsonl exist here and the database
+  # is empty, they are imported once at start-up.
   data-dir: ${CONSOLE_DATA_DIR:./data}
   # Service registry maintained by scripts/new-service.sh.
   registry: ${CONSOLE_REGISTRY:../config/services.yml}
