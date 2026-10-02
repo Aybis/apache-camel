@@ -12,6 +12,7 @@ import org.apache.camel.ProducerTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import com.integration.camel.paymentgateway.api.BankOutcome;
@@ -178,7 +179,15 @@ public class PaymentService {
             c = new BankAdapter.VaCreation(null, BankOutcome.unknown("adapter error: " + ex.getMessage()));
         }
         VirtualAccount done = va.withCreation(c.virtualAccountNo(), c.outcome());
-        store.update(done);
+        try {
+            store.update(done);
+        } catch (DuplicateKeyException e) {
+            // The number belongs to another reference (unique per bank in the database).
+            store.update(va.withCreation(null, new BankOutcome(PaymentStatus.FAILED, null, "DUPLICATE_NUMBER",
+                    "virtual account number " + c.virtualAccountNo() + " is already used by another reference")));
+            throw new PaymentException(409, "DUPLICATE_VIRTUAL_ACCOUNT",
+                    "Virtual account number " + c.virtualAccountNo() + " is already used by another reference");
+        }
         publish("virtual-account.created", done.id(), done.status(), done);
         return new Submitted<>(done, existing.isEmpty());
     }
@@ -199,30 +208,49 @@ public class PaymentService {
         return bank.respondVaPayment(call, decision);
     }
 
-    /** Applies a verified payment notification once; repeated notifications of the same payment are no-ops. */
-    synchronized VaPaymentDecision applyVaPayment(VaPaymentNotice n) {
-        var found = store.findVirtualAccountByNumber(n.bank(), n.virtualAccountNo());
-        if (found.isEmpty() || found.get().status() == PaymentStatus.FAILED) {
-            LOG.warn("Payment {} for unknown virtual account {} at {}", n.paymentRequestId(), n.virtualAccountNo(),
-                    n.bank());
-            return VaPaymentDecision.UNKNOWN_ACCOUNT;
+    /**
+     * Applies a verified payment notification once. The decision is taken while holding the account's row lock,
+     * so two deliveries of the same notification cannot both credit it; the database's unique index on the
+     * bank's payment id is the backstop. The event is published only after the credit is committed.
+     */
+    VaPaymentDecision applyVaPayment(VaPaymentNotice n) {
+        record Result(VaPaymentDecision decision, VirtualAccount paid) {
         }
-        VirtualAccount va = found.get();
-        if (va.status() == PaymentStatus.SUCCESS) {
-            return n.paymentRequestId().equals(va.paymentRequestId()) ? VaPaymentDecision.DUPLICATE
-                    : VaPaymentDecision.NOT_PAYABLE;
-        }
-        BigDecimal expected = va.request().amount();
-        if (expected != null && expected.compareTo(n.paidAmount()) != 0) {
-            return VaPaymentDecision.AMOUNT_MISMATCH;
-        }
-        if (va.request().expiresAt() != null && va.request().expiresAt().toInstant().isBefore(Instant.now())) {
+        Result result;
+        try {
+            result = store.withLockedVirtualAccount(n.bank(), n.virtualAccountNo(), found -> {
+                if (found.isEmpty() || found.get().status() == PaymentStatus.FAILED) {
+                    LOG.warn("Payment {} for unknown virtual account {} at {}", n.paymentRequestId(),
+                            n.virtualAccountNo(), n.bank());
+                    return new Result(VaPaymentDecision.UNKNOWN_ACCOUNT, null);
+                }
+                VirtualAccount va = found.get();
+                if (va.status() == PaymentStatus.SUCCESS) {
+                    return new Result(n.paymentRequestId().equals(va.paymentRequestId())
+                            ? VaPaymentDecision.DUPLICATE : VaPaymentDecision.NOT_PAYABLE, null);
+                }
+                BigDecimal expected = va.request().amount();
+                if (expected != null && expected.compareTo(n.paidAmount()) != 0) {
+                    return new Result(VaPaymentDecision.AMOUNT_MISMATCH, null);
+                }
+                if (va.request().expiresAt() != null
+                        && va.request().expiresAt().toInstant().isBefore(Instant.now())) {
+                    return new Result(VaPaymentDecision.NOT_PAYABLE, null);
+                }
+                VirtualAccount paid = va.withPayment(n);
+                store.update(paid);
+                return new Result(VaPaymentDecision.ACCEPTED, paid);
+            });
+        } catch (DuplicateKeyException e) {
+            // The bank's payment id already credited a different virtual account.
+            LOG.error("Payment {} from {} was already applied to another virtual account; refusing it for {}",
+                    n.paymentRequestId(), n.bank(), n.virtualAccountNo());
             return VaPaymentDecision.NOT_PAYABLE;
         }
-        VirtualAccount paid = va.withPayment(n);
-        store.update(paid);
-        publish("virtual-account.paid", paid.id(), paid.status(), paid);
-        return VaPaymentDecision.ACCEPTED;
+        if (result.paid() != null) {
+            publish("virtual-account.paid", result.paid().id(), result.paid().status(), result.paid());
+        }
+        return result.decision();
     }
 
     // ------------------------------------------------------------------ helpers

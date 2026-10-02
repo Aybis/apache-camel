@@ -10,16 +10,28 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import org.apache.camel.test.spring.junit6.CamelSpringBootTest;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+import com.integration.camel.paymentgateway.api.BankOutcome;
+import com.integration.camel.paymentgateway.api.Transfer;
+import com.integration.camel.paymentgateway.core.PaymentStore;
 
 import com.integration.camel.banksimulator.BankSimulatorRoutes;
 import com.integration.camel.banksimulator.SimulatorProperties;
@@ -29,8 +41,9 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * End-to-end flows through the gateway's HTTP API against the SNAP bank simulator (BNI profile), with
- * freshly generated keys: real signatures, tokens, timeouts and callbacks, no mocks.
+ * End-to-end flows through the gateway's HTTP API against the SNAP bank simulator (BNI profile) and a real
+ * PostgreSQL (Testcontainers), with freshly generated keys: real signatures, tokens, timeouts, callbacks and
+ * database constraints, no mocks. Needs Docker.
  */
 @CamelSpringBootTest
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT,
@@ -49,8 +62,24 @@ class PaymentGatewayFlowTest {
     static class WithSimulator {
     }
 
+    /** A real PostgreSQL, started once for the class; the schema comes from the Flyway migrations. */
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17-alpine");
+
+    static {
+        POSTGRES.start();
+    }
+
+    @Autowired
+    JdbcTemplate jdbc;
+
+    @Autowired
+    PaymentStore store;
+
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry r) throws Exception {
+        r.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        r.add("spring.datasource.username", POSTGRES::getUsername);
+        r.add("spring.datasource.password", POSTGRES::getPassword);
         KeyPair gateway = rsa();
         KeyPair bank = rsa();
         r.add("server.port", () -> PORT);
@@ -101,6 +130,36 @@ class PaymentGatewayFlowTest {
                 transfer("T-INTRA-1", "009", null, "999.00"));
         assertThat(conflict.statusCode()).isEqualTo(409);
         assertThat(conflict.body()).contains("DUPLICATE_REFERENCE");
+    }
+
+    @Test
+    void concurrentDuplicatesReachTheBankOnce() throws Exception {
+        String body = transfer("T-RACE-1", "009", null, "42.00");
+        List<Callable<Integer>> calls = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            calls.add(() -> post("/api/payments/v1/transfers", body).statusCode());
+        }
+        List<Integer> statuses = new ArrayList<>();
+        for (Future<Integer> f : Executors.newFixedThreadPool(8).invokeAll(calls)) {
+            statuses.add(f.get());
+        }
+        // Exactly one request sent the transfer; the others got the stored transfer back.
+        assertThat(statuses).containsOnly(200, 201);
+        assertThat(statuses.stream().filter(s -> s == 201).count()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transfer WHERE id = 'T-RACE-1'", Integer.class))
+                .isEqualTo(1);
+        // The bank recorded it once: a second send would have been refused with a duplicate reference.
+        JsonNode stored = JSON.readTree(get("/api/payments/v1/transfers/T-RACE-1").body());
+        assertThat(stored.path("status").asString()).isEqualTo("SUCCESS");
+    }
+
+    @Test
+    void aFinalStatusIsNeverOverwritten() throws Exception {
+        post("/api/payments/v1/transfers", transfer("T-FINAL-1", "009", null, "5.00"));
+        Transfer done = store.findTransfer("T-FINAL-1").orElseThrow();
+        assertThat(done.status().name()).isEqualTo("SUCCESS");
+        store.update(done.withOutcome(BankOutcome.unknown("stale write")));
+        assertThat(store.findTransfer("T-FINAL-1").orElseThrow().status().name()).isEqualTo("SUCCESS");
     }
 
     @Test
@@ -180,9 +239,36 @@ class PaymentGatewayFlowTest {
                 "{\"virtualAccountNo\":\"" + vaNo + "\",\"paymentRequestId\":\"PAY-2\"}").body());
         assertThat(other.path("gatewayResponse").path("responseCode").asString()).isEqualTo("4042514");
 
+        // The same notification delivered twice at the same moment is credited once.
+        post("/api/payments/v1/virtual-accounts", """
+                {"bank":"bni","clientReferenceId":"INV-1002","customerNo":"0000001002","name":"PT Kembar",
+                 "amount":1000}""");
+        Callable<String> notify = () -> post("/sim/va-payments",
+                "{\"virtualAccountNo\":\"988290000001002\",\"paymentRequestId\":\"PAY-TWIN\"}").body();
+        List<Future<String>> twins = Executors.newFixedThreadPool(2).invokeAll(List.of(notify, notify));
+        for (Future<String> f : twins) {
+            assertThat(JSON.readTree(f.get()).path("gatewayResponse").path("responseCode").asString())
+                    .isEqualTo("2002500");
+        }
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM virtual_account WHERE payment_request_id = 'PAY-TWIN'", Integer.class))
+                .isEqualTo(1);
+
         JsonNode state = JSON.readTree(get("/api/payments/v1/virtual-accounts/INV-1001").body());
         assertThat(state.path("status").asString()).isEqualTo("SUCCESS");
         assertThat(state.path("paymentRequestId").asString()).isEqualTo("PAY-1");
+    }
+
+    @Test
+    void aVirtualAccountNumberBelongsToOneReference() throws Exception {
+        String body = """
+                {"bank":"bni","clientReferenceId":"%s","customerNo":"0000009009","name":"PT Satu","amount":500}""";
+        assertThat(post("/api/payments/v1/virtual-accounts", body.formatted("INV-NUM-A")).statusCode()).isEqualTo(201);
+        HttpResponse<String> second = post("/api/payments/v1/virtual-accounts", body.formatted("INV-NUM-B"));
+        assertThat(second.statusCode()).isEqualTo(409);
+        assertThat(second.body()).contains("DUPLICATE_VIRTUAL_ACCOUNT");
+        assertThat(JSON.readTree(get("/api/payments/v1/virtual-accounts/INV-NUM-B").body()).path("status").asString())
+                .isEqualTo("FAILED");
     }
 
     @Test

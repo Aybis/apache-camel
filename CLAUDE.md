@@ -42,15 +42,18 @@ Details and the API are in `services/payment-gateway/README.md`.
    mapping); proprietary APIs implement `BankAdapter` (add `--proprietary`).
 3. Never resend a money-moving request. Payment routes use the `payment-api` route configuration (no
    redelivery). A timeout, connection reset or 5xx is `UNKNOWN`, resolved only by status inquiry.
-4. `clientReferenceId` is the idempotency key; a transfer is stored before it is sent.
+4. `clientReferenceId` is the idempotency key; a transfer is stored (committed in PostgreSQL) before it is sent.
+   Money-safety rules are enforced by the database (keys, unique indexes, guarded UPDATEs, row locks); schema
+   changes are new Flyway files in `src/main/resources/db/migration`, never edits to applied ones.
 5. Bank calls that can arrive twice (VA payment notifications) are applied once, keyed by the bank's payment id.
 6. Credentials and private keys come only from the environment; dev keys come from
    `services/bank-simulator/dev/dev-keys.sh` and are git-ignored. bank-simulator is local/test only.
 7. Wrap nested `ProducerTemplate` calls made inside a processor with `MdcScope.preserving(...)`, or the
    correlation ID disappears from the logs after the call.
-8. Every payment behaviour change gets a case in `PaymentGatewayFlowTest`, which runs against the simulator.
+8. Every payment behaviour change gets a case in `PaymentGatewayFlowTest`, which runs against the simulator
+   and a real PostgreSQL (Testcontainers; the build needs Docker).
 
-
+## Known decisions (do not undo without reason)
 - Camel 4.22.1 LTS + Spring Boot 4.1.1 + Java 25 LTS (pinned in the root pom only; images use
   eclipse-temurin:25-jre). Java 25 rules from the standards document (STD-JAVA-01..05):
   - Prove every third-party library on Java 25 before production (IBM MQ client support is not yet confirmed

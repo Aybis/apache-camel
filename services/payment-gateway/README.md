@@ -60,9 +60,28 @@ from the environment: `BNI_CLIENT_KEY`, `BNI_CLIENT_SECRET`, `BNI_PRIVATE_KEY` (
 `BNI_PARTNER_ID`, `BNI_CHANNEL_ID`, `BNI_VA_PARTNER_SERVICE_ID`, and for calls from BNI
 `BNI_INBOUND_CLIENT_KEY`, `BNI_INBOUND_CLIENT_SECRET`, `BNI_INBOUND_PUBLIC_KEY`. Set `BNI_ENABLED=true`.
 
+## Database
+
+PostgreSQL, schema `payment_gateway`, created and migrated by Flyway at start-up from
+`src/main/resources/db/migration`. Connection from `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`,
+`SPRING_DATASOURCE_PASSWORD`. The database enforces the money-safety rules itself, so they hold across replicas:
+
+| Rule | How |
+|---|---|
+| A client reference is sent at most once | `transfer.id` primary key; `INSERT ... ON CONFLICT DO NOTHING` decides which request sends |
+| Saved before sending | the insert is its own committed statement, before the bank is called |
+| A final status is never overwritten | every UPDATE is guarded by `status IN ('PENDING','UNKNOWN')` (or `<> 'SUCCESS'` for accounts) |
+| A payment notification is credited once | row lock (`SELECT ... FOR UPDATE`) on the account while deciding; unique index on (bank, payment id) |
+| Money is exact | `NUMERIC(19,2)`, status values constrained by CHECK |
+
+Schema changes are new migration files (`V2__...sql`); never edit an applied one.
+
 ## Running locally against the simulator
 
 ```bash
+docker run -d --name payments-db -p 5432:5432 -e POSTGRES_DB=camel -e POSTGRES_USER=camel \
+  -e POSTGRES_PASSWORD=camel postgres:17-alpine
+export SPRING_DATASOURCE_USERNAME=camel SPRING_DATASOURCE_PASSWORD=camel
 mvn -B -pl services/bank-simulator,services/payment-gateway -am package
 bash services/bank-simulator/dev/dev-keys.sh                 # throwaway keys, git-ignored
 set -a; source services/bank-simulator/dev/.keys/dev.env; set +a
@@ -73,13 +92,13 @@ curl -X POST localhost:8103/sim/va-payments -d '{"virtualAccountNo":"988297001"}
 
 The simulator chooses its behaviour from the amount's cents: `.13` insufficient funds, `.44` bank error
 with nothing recorded, `.55` accepted then pending, `.77` processed but answered too late (timeout), any
-other value succeeds. `PaymentGatewayFlowTest` runs all of these against the simulator on every build.
+other value succeeds. `PaymentGatewayFlowTest` runs all of these against the simulator and a real PostgreSQL (Testcontainers, so
+the build needs Docker), including concurrent duplicate requests and duplicate notifications.
 
 ## What this version deliberately leaves out
 
 | Gap | Risk | What production needs |
 |---|---|---|
-| In-memory store | Restart loses transfers; idempotency is per instance, so a second replica could send a transfer twice. | Database store with a unique key on the reference, before more than one replica. |
 | Events sent synchronously | If the events endpoint is down, the event goes to the dead letter log only. | Transactional outbox. |
 | BNI contract from the SNAP standard | BNI may differ in paths, mandatory `additionalInfo` fields, or run virtual accounts on BNI eCollection instead of SNAP. | Check against BNI's portal and signature test vectors at onboarding. |
 | Interbank without prior account inquiry | A wrong beneficiary name is only caught by the bank. | SNAP account inquiry (service 16) before interbank transfers. |
