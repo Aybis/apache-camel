@@ -50,7 +50,17 @@ class ApiControllerTest {
                     port: 8101
                     description: "Syncs orders"
                 """);
-        registry.add("console.data-dir", () -> dir.resolve("data").toString());
+        // A store written by the pre-PostgreSQL console (no localOnly field): imported once at start-up.
+        Path data = Files.createDirectories(dir.resolve("data"));
+        Files.writeString(data.resolve("store.json"), """
+                {"legacy-svc":{"name":"legacy-svc","domain":"orders","description":"old","port":8199,
+                 "config":{"service":"legacy-svc","version":2,"logLevels":{"ROOT":"WARN"},"properties":{},
+                 "updatedAt":"2026-10-01T10:00:00Z","updatedBy":"Ama"}}}""");
+        Files.writeString(data.resolve("audit.jsonl"), """
+                {"at":"2026-10-01T09:00:00Z","service":"legacy-svc","changedBy":"Ama","comment":"first","fromVersion":0,"toVersion":1,"logLevels":{},"properties":{}}
+                {"at":"2026-10-01T10:00:00Z","service":"legacy-svc","changedBy":"Ama","comment":"quieter","fromVersion":1,"toVersion":2,"logLevels":{"ROOT":"WARN"},"properties":{}}
+                """);
+        registry.add("console.data-dir", data::toString);
         registry.add("console.registry", registryFile::toString);
         registry.add("console.write-token", () -> "secret");
     }
@@ -148,5 +158,15 @@ class ApiControllerTest {
         org.assertj.core.api.Assertions.assertThat(store.audit("concurrency-check", 100))
                 .extracting(Model.AuditEntry::toVersion)
                 .containsExactlyInAnyOrder(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L);
+    }
+
+    @Test
+    void legacyFileStoreIsImportedOnce() throws Exception {
+        mvc.perform(get("/api/services/legacy-svc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.configVersion").value(2))
+                .andExpect(jsonPath("$.localOnly").value(false));
+        org.assertj.core.api.Assertions.assertThat(store.audit("legacy-svc", 10))
+                .extracting(Model.AuditEntry::comment).containsExactly("quieter", "first");
     }
 }

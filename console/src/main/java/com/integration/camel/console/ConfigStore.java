@@ -31,6 +31,7 @@ import com.integration.camel.console.Model.ServiceConfig;
 import com.integration.camel.console.Model.ServiceEntry;
 
 import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -170,7 +171,10 @@ public class ConfigStore implements ApplicationRunner {
         if (!Files.exists(store) || jdbc.sql("SELECT count(*) FROM service").query(Long.class).single() > 0) {
             return;
         }
-        Map<String, ServiceEntry> legacy = mapper.readValue(store.toFile(), new TypeReference<Map<String, ServiceEntry>>() { });
+        // The file format predates `localOnly`; missing fields read as false/null.
+        Map<String, ServiceEntry> legacy = mapper.readerFor(new TypeReference<Map<String, ServiceEntry>>() { })
+                .without(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+                .readValue(store.toFile());
         for (ServiceEntry e : legacy.values()) {
             ServiceConfig c = e.config();
             jdbc.sql("INSERT INTO service (name, domain, description, port) VALUES (?, ?, ?, ?)")
