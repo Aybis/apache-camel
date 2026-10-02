@@ -9,6 +9,9 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME:console}
     # Password only from SPRING_DATASOURCE_PASSWORD (environment), never from this file.
     hikari:
+      # Keep PostgreSQL's DETAIL (row values) out of exceptions and logs, as the global config does for services.
+      data-source-properties:
+        logServerErrorDetail: false
       maximum-pool-size: 5
       minimum-idle: 1
       schema: console
